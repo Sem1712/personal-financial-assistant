@@ -34,7 +34,9 @@ class SectionReplacementError(ValueError):
         super().__init__(json.dumps(details, ensure_ascii=True))
 
 
-def validate_section_selector(strategy: str, selector: object, *, present: bool) -> None:
+def validate_section_selector(
+    strategy: str, selector: object, *, present: bool
+) -> None:
     """Validate opt-in selector metadata without silently changing strategies."""
     if strategy != "replace-section":
         if present:
@@ -145,7 +147,11 @@ def replace_section(
             continue
         if fence_marker:
             closing = re.fullmatch(r" {0,3}(`+|~+)[ \t]*", text)
-            if closing and closing[1][0] == fence_marker and len(closing[1]) >= fence_length:
+            if (
+                closing
+                and closing[1][0] == fence_marker
+                and len(closing[1]) >= fence_length
+            ):
                 fence_marker = ""
             continue
         opening = re.match(r" {0,3}(`{3,}|~{3,})(.*)$", text)
@@ -157,29 +163,36 @@ def replace_section(
             title = re.sub(r"[ \t]+#+[ \t]*$", "", heading[2] or "").strip(" \t")
             headings.append((len(heading[1]), title, number, start, offset))
 
-    matches = [index for index, heading in enumerate(headings) if _anchor(heading[1]) == selector]
+    matches = [
+        index
+        for index, heading in enumerate(headings)
+        if _anchor(heading[1]) == selector
+    ]
     if len(matches) != 1:
-        raise SectionReplacementError({
-            "code": "SECTION_NOT_FOUND" if not matches else "SECTION_AMBIGUOUS",
-            "preset": preset,
-            "contribution": contribution,
-            "artifact": artifact,
-            "selector": selector,
-            "match_count": len(matches),
-            "candidates": [
-                {"heading": headings[index][1], "line": headings[index][2]}
-                for index in matches
-            ],
-            "remediation": (
-                "Check the selector and current target headings."
-                if not matches else "Make the target heading anchors unique."
-            ),
-        })
+        raise SectionReplacementError(
+            {
+                "code": "SECTION_NOT_FOUND" if not matches else "SECTION_AMBIGUOUS",
+                "preset": preset,
+                "contribution": contribution,
+                "artifact": artifact,
+                "selector": selector,
+                "match_count": len(matches),
+                "candidates": [
+                    {"heading": headings[index][1], "line": headings[index][2]}
+                    for index in matches
+                ],
+                "remediation": (
+                    "Check the selector and current target headings."
+                    if not matches
+                    else "Make the target heading anchors unique."
+                ),
+            }
+        )
 
     index = matches[0]
     level, _, _, _, body_start = headings[index]
     body_end = next(
-        (heading[3] for heading in headings[index + 1:] if heading[0] <= level),
+        (heading[3] for heading in headings[index + 1 :] if heading[0] <= level),
         len(content),
     )
     if (
@@ -189,7 +202,9 @@ def replace_section(
         and not replacement.startswith(("\n", "\r"))
     ):
         last_newline = content.rfind("\n")
-        separator = "\r\n" if last_newline > 0 and content[last_newline - 1] == "\r" else "\n"
+        separator = (
+            "\r\n" if last_newline > 0 and content[last_newline - 1] == "\r" else "\n"
+        )
         replacement = separator + replacement
     return content[:body_start] + replacement + content[body_end:]
 
@@ -210,10 +225,13 @@ def _main() -> int:
     try:
         content = args.input.read_bytes() if args.input else sys.stdin.buffer.read()
         result = replace_section(
-            content.decode("utf-8"), args.replacement.read_bytes().decode("utf-8"),
+            content.decode("utf-8"),
+            args.replacement.read_bytes().decode("utf-8"),
             base64.b64decode(args.selector, validate=True).decode("utf-8")
-            if args.selector_base64 else args.selector,
-            preset=args.preset, contribution=str(args.replacement),
+            if args.selector_base64
+            else args.selector,
+            preset=args.preset,
+            contribution=str(args.replacement),
             artifact=args.artifact,
         ).encode("utf-8")
         if args.output:

@@ -3,14 +3,12 @@
 A planned local-first assistant for understanding bank transactions, assessing financial
 responsibility, and exploring whether to make a purchase outright or in installments.
 
-**Status:** This repository currently contains a uv project and a placeholder CLI that prints
-a greeting. Transaction ingestion, analytics, purchase guidance, the database, model integration,
-tests, and quality tools are not implemented or configured yet.
+**Status:** On-demand Intesa Sanpaolo XLSX ingestion is available. Analytics, purchase
+guidance, and model integration are not implemented.
 
 ## Planned workflow
 
-1. Ingest bank transactions, validate and normalize them, and prevent duplicate imports.
-   The bank connection and input formats are yet to be defined.
+1. Manually download Intesa XLSX exports and import them on demand.
 2. Store the data in a locally hosted PostgreSQL database running in Docker. Use asynchronous
    SQLAlchemy for database access and Alembic for schema migrations.
 3. Analyze available income, spending, and transaction trends using exact monetary calculations.
@@ -31,8 +29,7 @@ or credit commitments. Financial data and model prompts containing it are intend
 - Ruff for linting and formatting, Pyright in strict mode for type checking, and pytest with
   testcontainers for unit and integration testing.
 
-Only the Python/uv project scaffold exists today. The other integrations and tools above are
-the intended stack, not installed project dependencies.
+Database, ingestion, and testing dependencies are installed; model integration remains planned.
 
 ## Getting started
 
@@ -43,20 +40,46 @@ also install a managed Python interpreter when needed.
 # Create and synchronize the project environment from the lockfile.
 uv sync --locked
 
-# Run the current placeholder CLI.
-uv run --locked personal-financial-assistant
+# Copy .env.example to .env and replace both password placeholders with the same
+# local password. URL-encode special characters in the database URL password.
+docker compose up -d --wait
+uv run --locked alembic upgrade head
+
+# Read all XLSX exports directly in this folder.
+uv run --locked personal-financial-assistant ingest-xlsx --input-dir /path/to/exports
 ```
 
-The CLI currently prints `Hello from personal-financial-assistant!`.
+Keep bank exports local and outside version control. `PFA_DATABASE_URL` must point to a
+loopback PostgreSQL address. `.env` is read from the current directory; environment variables
+override it. Never commit credentials or bank files.
 
-The planned database and integration tests will also require Docker with a running daemon.
+The command reads direct, regular `.xlsx` files for one account, ignores temporary and
+symlinked files, and reports counts without transaction values. Empty folders are a no-op;
+invalid files or storage errors fail the whole batch. Pending and booked states and original
+bank categories are retained; categories are suggestions, not classifications. CSV, other
+banks, automatic bank connections, and scheduled imports are not supported.
+Blank rows and trailing single-cell notes beginning `Nota:`, `Note:`, `Legenda:`, or
+`Avvertenza:` in the date or operation column are recognized as footer text; other
+incomplete rows fail.
+Empty exports are tracked by digest; an identifiable `Conti e Carte:` header is checked
+against the selected account, while an absent account is not invented.
+Nonempty operation, details, and category cells must be text; other types fail validation
+instead of being discarded. Formulas in transaction columns are not supported.
+
+Repeated identical files are skipped. The account/date/signed amount/currency key is a
+candidate group, not a unique transaction ID: same-key rows coexisting in a file are retained,
+and overlapping exports use the maximum observed per-file count. Distinct identical-key
+transactions that never coexist in one export may be undercounted. Ambiguous associations
+are reported as unresolved; pending transactions are not automatically cancelled or matched
+across changed keys. Newly inferred ambiguous occurrences have unknown booking status, while
+the source observations retain their reported statuses. These records describe the supplied
+exports, not a live bank balance.
+
+The database and integration tests require Docker with a running daemon.
 Model-assisted features will require LM Studio with a model loaded and its local API server
 running.
 
-## Planned development commands
-
-These commands are not usable as project quality gates yet. They require the corresponding
-dependencies, configuration, and tests to be added first:
+## Development commands
 
 ```sh
 uv run ruff check .
@@ -65,14 +88,7 @@ uv run pyright
 uv run pytest
 ```
 
-Database integration tests are intended to use testcontainers and require a running Docker
-daemon. Once a Docker Compose configuration and Alembic migrations exist, the intended
-database startup and migration commands are:
-
-```sh
-docker compose up -d
-uv run alembic upgrade head
-```
+Database integration tests use testcontainers and require access to Docker.
 
 ## Project guidance
 
