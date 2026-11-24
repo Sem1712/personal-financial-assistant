@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import Sequence
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy import event, func, select
@@ -9,11 +10,136 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from personal_financial_assistant.cli import run
-from personal_financial_assistant.infrastructure.models import SourceFile
+from personal_financial_assistant.infrastructure.database import (
+    PinnedConnectionBusy,
+    PinnedConnectionLost,
+)
+from personal_financial_assistant.infrastructure.models import (
+    SourceFile,
+    TransactionOccurrence,
+)
 from personal_financial_assistant.ingestion import service
 from personal_financial_assistant.ingestion.service import IngestionError, ingest_xlsx
-from personal_financial_assistant.ingestion.xlsx_reader import FileSnapshot
+from personal_financial_assistant.ingestion.worker_client import (
+    WorkbookWorker,
+    WorkerTimeout,
+)
+from personal_financial_assistant.ingestion.xlsx_reader import (
+    FileSnapshot,
+    discover_workbooks,
+    read_workbook,
+)
 from tests.fixtures.intesa_xlsx import HEADINGS, workbook
+from tests.fixtures.ui import create_export
+
+
+@pytest.mark.asyncio
+async def test_ingestion_uses_pinned_connection_without_reconnecting(
+    tmp_path: Path, migrated_url: str
+) -> None:
+    create_export(tmp_path)
+    engine = create_async_engine(migrated_url)
+    try:
+        async with engine.connect() as connection:
+            pid = await connection.scalar(select(func.pg_backend_pid()))
+            await connection.commit()
+            result = await ingest_xlsx(tmp_path, connection)
+            assert result.transactions_added == 1
+            assert await connection.scalar(select(func.pg_backend_pid())) == pid
+            await connection.commit()
+            await connection.invalidate()
+            with pytest.raises(PinnedConnectionLost):
+                await ingest_xlsx(tmp_path, connection)
+            assert connection.invalidated
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_lost_pinned_connection_cannot_commit_import(
+    tmp_path: Path, migrated_url: str
+) -> None:
+    create_export(tmp_path)
+    engine = create_async_engine(migrated_url)
+    try:
+        async with engine.connect() as connection:
+            pid = await connection.scalar(select(func.pg_backend_pid()))
+            assert pid is not None
+            await connection.commit()
+            worker = AsyncMock(spec=WorkbookWorker)
+            worker.discover.side_effect = discover_workbooks
+            worker.read.side_effect = read_workbook
+
+            async def lose_connection(_snapshots: Sequence[FileSnapshot]) -> None:
+                async with engine.begin() as killer:
+                    await killer.scalar(select(func.pg_terminate_backend(pid)))
+
+            worker.verify.side_effect = lose_connection
+            with pytest.raises(SQLAlchemyError):
+                await ingest_xlsx(tmp_path, connection, worker=worker)
+        async with engine.connect() as check:
+            assert await check.scalar(select(func.count()).select_from(SourceFile)) == 0
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_ui_worker_imports_with_pinned_postgresql_connection(
+    tmp_path: Path, migrated_url: str
+) -> None:
+    create_export(tmp_path)
+    engine = create_async_engine(migrated_url)
+    try:
+        async with engine.connect() as connection, WorkbookWorker() as worker:
+            result = await ingest_xlsx(tmp_path, connection, worker=worker)
+            assert result.transactions_added == 1
+            assert (
+                await connection.scalar(select(TransactionOccurrence.amount_minor))
+                == -1234
+            )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_ingestion_rejects_an_existing_pinned_transaction(
+    tmp_path: Path, migrated_url: str
+) -> None:
+    create_export(tmp_path)
+    engine = create_async_engine(migrated_url)
+    try:
+        async with engine.connect() as connection:
+            await connection.scalar(select(1))
+            with pytest.raises(PinnedConnectionBusy):
+                await ingest_xlsx(tmp_path, connection)
+            assert (
+                await connection.scalar(select(func.count()).select_from(SourceFile))
+                == 0
+            )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_ui_verification_timeout_rolls_back_pinned_import(
+    tmp_path: Path, migrated_url: str
+) -> None:
+    create_export(tmp_path)
+    engine = create_async_engine(migrated_url)
+    worker = AsyncMock(spec=WorkbookWorker)
+    worker.discover.side_effect = discover_workbooks
+    worker.read.side_effect = read_workbook
+    worker.verify.side_effect = WorkerTimeout("Workbook operation timed out.")
+    try:
+        async with engine.connect() as connection:
+            with pytest.raises(WorkerTimeout):
+                await ingest_xlsx(tmp_path, connection, worker=worker)
+            assert (
+                await connection.scalar(select(func.count()).select_from(SourceFile))
+                == 0
+            )
+    finally:
+        await engine.dispose()
 
 
 @pytest.mark.asyncio

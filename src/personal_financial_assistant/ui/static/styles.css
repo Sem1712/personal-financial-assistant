@@ -1,0 +1,47 @@
+:root {
+  font-family: system-ui, sans-serif;
+  color: #202a35;
+  background: #f5f7fa;
+}
+
+body {
+  max-width: 70rem;
+  margin: 0 auto;
+  padding: 1.5rem;
+}
+
+nav {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+button, input, select {
+  font: inherit;
+}
+
+button {
+  padding: 0.5rem 1rem;
+}
+
+main {
+  margin-top: 1.5rem;
+}
+
+form {
+  display: grid;
+  gap: 0.6rem;
+  max-width: 36rem;
+}
+
+form input {
+  padding: 0.5rem;
+}
+
+form button {
+  justify-self: start;
+}
+
+#import-status, #navigation-status {
+  margin: 1rem 0;
+}

@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from sqlalchemy import func, insert, select
-from sqlalchemy.ext.asyncio import AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from personal_financial_assistant.infrastructure.database import session_scope
 from personal_financial_assistant.infrastructure.models import (
@@ -18,6 +18,7 @@ from personal_financial_assistant.infrastructure.models import (
     occurrence_observation,
 )
 from personal_financial_assistant.ingestion.identity import Evidence, plan_group
+from personal_financial_assistant.ingestion.worker_client import WorkbookWorker
 from personal_financial_assistant.ingestion.xlsx_reader import (
     FileSnapshot,
     Observation,
@@ -31,6 +32,18 @@ from personal_financial_assistant.ingestion.xlsx_reader import (
 
 class IngestionError(Exception):
     """A sanitized import failure."""
+
+
+class InvalidWorkbook(IngestionError):
+    """A source workbook is invalid, unreadable, or changed."""
+
+
+class AccountMismatch(IngestionError):
+    """Source accounts are inconsistent or differ from the selected account."""
+
+
+class ImportInProgress(IngestionError):
+    """Another ingestion transaction holds the import lock."""
 
 
 @dataclass(frozen=True)
@@ -56,45 +69,60 @@ def _candidate_key(account_id: int, observation: Observation) -> str:
 
 async def ingest_xlsx(
     directory: Path,
-    engine: AsyncEngine,
+    engine: AsyncEngine | AsyncConnection,
     *,
     snapshots: Sequence[FileSnapshot] | None = None,
+    worker: WorkbookWorker | None = None,
 ) -> ImportResult:
-    """Validate every workbook and reconcile accepted observations atomically."""
-    snapshots = (
-        snapshots if snapshots is not None else await discover_workbooks(directory)
-    )
+    """Reconcile a batch atomically, optionally using an owned UI worker and connection.
+
+    The caller owns the worker and any pinned connection. A pinned connection must
+    not have an active transaction when ingestion starts.
+    """
+    if snapshots is None:
+        snapshots = (
+            await worker.discover(directory)
+            if worker is not None
+            else await discover_workbooks(directory)
+        )
     parsed: list[ParsedFile] = []
     for ordinal, snapshot in enumerate(snapshots, 1):
         try:
-            parsed.append(await read_workbook(snapshot))
+            parsed.append(
+                await worker.read(snapshot)
+                if worker is not None
+                else await read_workbook(snapshot)
+            )
         except WorkbookError as exc:
-            raise IngestionError(f"file {ordinal}: {exc}") from None
+            raise InvalidWorkbook(f"file {ordinal}: {exc}") from None
     accounts = {
         source.account_reference
         for source in parsed
         if source.account_reference is not None
     }
     if len(accounts) > 1:
-        raise IngestionError("multiple accounts")
+        raise AccountMismatch("multiple accounts")
     if not parsed:
         try:
-            await check_snapshots(snapshots)
+            if worker is not None:
+                await worker.verify(snapshots)
+            else:
+                await check_snapshots(snapshots)
         except WorkbookError as exc:
-            raise IngestionError(str(exc)) from None
+            raise InvalidWorkbook(str(exc)) from None
         return ImportResult(len(snapshots), len(snapshots), 0, 0, 0, 0, 0, 0)
     account_reference = next(iter(accounts), None)
     async with session_scope(engine) as session:
         locked = await session.scalar(select(func.pg_try_advisory_xact_lock(7718257)))
         if not locked:
-            raise IngestionError("another import is in progress")
+            raise ImportInProgress("another import is in progress")
         existing_account = await session.scalar(select(SelectedAccount))
         if (
             account_reference is not None
             and existing_account
             and existing_account.account_reference != account_reference
         ):
-            raise IngestionError("account does not match previous imports")
+            raise AccountMismatch("account does not match previous imports")
         account = existing_account
         if account is None and account_reference is not None:
             account = SelectedAccount(account_reference=account_reference)
@@ -133,7 +161,7 @@ async def ingest_xlsx(
             if not source.observations:
                 continue
             if account is None:
-                raise IngestionError("missing account for transaction rows")
+                raise InvalidWorkbook("missing account for transaction rows")
             ordinals: defaultdict[str, int] = defaultdict(int)
             for observation in source.observations:
                 key = _candidate_key(account.id, observation)
@@ -238,9 +266,12 @@ async def ingest_xlsx(
             )
         )
         try:
-            await check_snapshots(snapshots)
+            if worker is not None:
+                await worker.verify(snapshots)
+            else:
+                await check_snapshots(snapshots)
         except WorkbookError as exc:
-            raise IngestionError(str(exc)) from None
+            raise InvalidWorkbook(str(exc)) from None
     return ImportResult(
         files_seen=len(snapshots),
         files_processed=len(seen_sources),

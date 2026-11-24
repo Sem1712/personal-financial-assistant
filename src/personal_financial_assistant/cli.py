@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+import logging
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -59,8 +60,31 @@ def parse_parameters(arguments: Sequence[str]) -> IngestXlsxParameters:
         raise ParameterError("Invalid input directory") from None
 
 
+async def serve_ui() -> None:
+    """Serve the local browser interface on loopback only."""
+    import uvicorn
+
+    from personal_financial_assistant.ui.app import create_app
+    from personal_financial_assistant.ui.errors import SanitizedServerErrors
+
+    config = uvicorn.Config(create_app(), host="127.0.0.1", port=8765, access_log=False)
+    server_logger = logging.getLogger("uvicorn.error")
+    log_filter = SanitizedServerErrors()
+    server_logger.addFilter(log_filter)
+    try:
+        await uvicorn.Server(config).serve()
+    finally:
+        server_logger.removeFilter(log_filter)
+
+
 async def run(arguments: Sequence[str]) -> int:
     """Run one command and print only sanitized summaries."""
+    if arguments and arguments[0] == "serve-ui":
+        if len(arguments) != 1:
+            print("Invalid command or arguments", file=sys.stderr)
+            return 1
+        await serve_ui()
+        return 0
     try:
         params = parse_parameters(arguments)
         snapshots = await discover_workbooks(params.input_dir)

@@ -30,7 +30,7 @@ def test_upgrade_preserves_existing_schema(
     command.upgrade(Config("alembic.ini"), "head")
     assert (
         asyncio.run(execute(postgres_url, "SELECT version_num FROM alembic_version"))
-        == "0003_empty_source"
+        == "0004_ui_import_run"
     )
     if existing:
         assert (
@@ -107,3 +107,112 @@ def test_empty_source_constraint_and_downgrade(
         )
     with pytest.raises(RuntimeError, match="empty sources have no account"):
         command.downgrade(config, "0002_unknown_status")
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_ui_import_run_migration(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    monkeypatch.setenv("PFA_DATABASE_URL", postgres_url)
+    config = Config("alembic.ini")
+    if existing:
+        command.upgrade(config, "0003_empty_source")
+        asyncio.run(
+            execute(
+                postgres_url,
+                "INSERT INTO selected_account (id, account_reference) "
+                "VALUES (1, 'synthetic')",
+            )
+        )
+        asyncio.run(
+            execute(
+                postgres_url,
+                "INSERT INTO transaction_occurrence "
+                "(id, account_id, transaction_date, amount_minor, currency, "
+                "booking_status, reconciliation_state) "
+                "VALUES (1, 1, '2022-01-01', -500, 'EUR', 'booked', 'confirmed')",
+            )
+        )
+
+    command.upgrade(config, "head")
+    assert (
+        asyncio.run(execute(postgres_url, "SELECT version_num FROM alembic_version"))
+        == "0004_ui_import_run"
+    )
+    assert (
+        asyncio.run(
+            execute(
+                postgres_url,
+                "SELECT count(*) > 0 FROM pg_indexes "
+                "WHERE tablename = 'ui_import_run' "
+                "AND indexdef ILIKE '%started_at%'",
+            )
+        )
+        is True
+    )
+    asyncio.run(
+        execute(
+            postgres_url,
+            "INSERT INTO ui_import_run (id, state, started_at) "
+            "VALUES ('00000000-0000-0000-0000-000000000001', 'running', now())",
+        )
+    )
+    count_columns = (
+        "files_seen",
+        "files_processed",
+        "files_unchanged",
+        "rows_read",
+        "transactions_added",
+        "transactions_updated",
+        "observations_unchanged",
+        "unresolved_observations",
+    )
+    invalid_statements = (
+        (
+            "INSERT INTO ui_import_run (id, state, started_at) "
+            "VALUES ('00000000-0000-0000-0000-000000000002', 'invalid', now())"
+        ),
+        "UPDATE ui_import_run SET state = 'failed', finished_at = now()",
+    )
+    for statement in invalid_statements:
+        with pytest.raises(IntegrityError):
+            asyncio.run(execute(postgres_url, statement))
+    asyncio.run(
+        execute(
+            postgres_url,
+            "UPDATE ui_import_run SET state = 'succeeded', finished_at = now(), "
+            + ", ".join(f"{column} = 0" for column in count_columns),
+        )
+    )
+    for column in count_columns:
+        with pytest.raises(IntegrityError):
+            asyncio.run(
+                execute(postgres_url, f"UPDATE ui_import_run SET {column} = -1")
+            )
+    if existing:
+        assert (
+            asyncio.run(
+                execute(
+                    postgres_url,
+                    "SELECT amount_minor FROM transaction_occurrence WHERE id = 1",
+                )
+            )
+            == -500
+        )
+    command.downgrade(config, "0003_empty_source")
+    assert (
+        asyncio.run(
+            execute(postgres_url, "SELECT to_regclass('ui_import_run') IS NULL")
+        )
+        is True
+    )
+    if existing:
+        assert (
+            asyncio.run(
+                execute(
+                    postgres_url,
+                    "SELECT amount_minor FROM transaction_occurrence WHERE id = 1",
+                )
+            )
+            == -500
+        )

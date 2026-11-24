@@ -3,8 +3,8 @@
 A planned local-first assistant for understanding bank transactions, assessing financial
 responsibility, and exploring whether to make a purchase outright or in installments.
 
-**Status:** On-demand Intesa Sanpaolo XLSX ingestion is available. Analytics, purchase
-guidance, and model integration are not implemented.
+**Status:** On-demand Intesa Sanpaolo XLSX ingestion and local transaction browsing are
+available. Chat, reports, analytics, purchase guidance, and model integration are not implemented.
 
 ## Planned workflow
 
@@ -47,7 +47,24 @@ uv run --locked alembic upgrade head
 
 # Read all XLSX exports directly in this folder.
 uv run --locked personal-financial-assistant ingest-xlsx --input-dir /path/to/exports
+
+# Or start the local browser interface.
+uv run --locked personal-financial-assistant serve-ui
 ```
+
+Open `http://127.0.0.1:8765/` on the same machine. Chat and reports are placeholders;
+use Import to enter a local folder and Transactions to browse and filter recorded
+occurrences. Transaction details show linked source observations and bank-suggested
+categories; conflicting or missing evidence is not resolved by the UI. Export data
+does not represent a live balance or guarantee complete history.
+
+The UI blocks in-app navigation while an import may be running. If an outcome cannot
+be established after interruption, it is shown as unknown; inspect transactions before
+intentionally retrying. If a request has no recorded run, **Resolve unrecorded import**
+prevents that request from starting later and preserves its unknown outcome. Multiple
+recovered outcomes remain visible until dismissed. Requests, data, and static assets
+remain local, and paths and financial filters are not included in URLs. Use the interface
+only on a trusted local machine; other software running as the same user may access local data.
 
 Keep bank exports local and outside version control. `PFA_DATABASE_URL` must point to a
 loopback PostgreSQL address. `.env` is read from the current directory; environment variables
@@ -82,13 +99,18 @@ running.
 ## Development commands
 
 ```sh
-uv run ruff check .
-uv run ruff format --check .
-uv run pyright
-uv run pytest
+uv run --locked ruff check .
+uv run --locked ruff format --check .
+uv run --locked pyright
+uv run --locked pytest
 ```
 
-Database integration tests use testcontainers and require access to Docker.
+Database integration tests use testcontainers and require access to Docker. Browser
+tests use Playwright's local Chromium; provision it with
+`uv run --locked playwright install chromium` and install the operating-system
+libraries required by Playwright if they are missing. No model service is needed for
+the current UI tests. See the [UI quickstart](specs/002-financial-assistant-ui/quickstart.md)
+for synthetic scenarios and release checks.
 
 ## Project guidance
 

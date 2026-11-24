@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="pfa-token" content="__PFA_TOKEN__">
+  <title>Personal Financial Assistant</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script type="module" src="/static/app.js"></script>
+</head>
+<body>
+  <header>
+    <h1>Personal Financial Assistant</h1>
+    <nav aria-label="Main navigation">
+      <button type="button" data-view="chat">Chat</button>
+      <button type="button" data-view="import">Import</button>
+      <button type="button" data-view="transactions">Transactions</button>
+    </nav>
+  </header>
+  <main>
+    <p id="navigation-status" role="status"></p>
+    <section id="chat">
+      <h2>Chat</h2>
+      <p>Chat and reports are not available yet.</p>
+      <button id="chat-import" type="button">Go to import</button>
+      <button id="chat-transactions" type="button">Go to transactions</button>
+    </section>
+    <section id="import" hidden>
+      <h2>Import</h2>
+      <p>Import supported XLSX exports from a folder on this computer.</p>
+      <form id="import-form">
+        <label for="import-folder">Local folder</label>
+        <input id="import-folder" name="input_dir" type="text" required autocomplete="off">
+        <button id="import-start" type="submit">Start import</button>
+      </form>
+      <div id="import-status" role="status" aria-live="polite"></div>
+      <ul id="import-counts" aria-label="Import counts"></ul>
+      <ul id="import-outcomes" aria-label="Recovered import outcomes"></ul>
+      <button id="import-dismiss" type="button" hidden>Dismiss recovered outcomes</button>
+      <button id="import-retry" type="button" hidden>Retry status</button>
+      <p id="import-resolve-help" hidden>Resolving prevents an unrecorded request from starting later. Its outcome remains unknown; check transactions before retrying.</p>
+      <button id="import-resolve" type="button" hidden>Resolve unrecorded import</button>
+    </section>
+    <section id="transactions" hidden>
+      <h2>Transactions</h2>
+      <p>These records reflect supplied exports, not a live balance or guaranteed complete account history.</p>
+      <form id="transaction-filters" novalidate>
+        <label for="date-from">From date</label>
+        <input id="date-from" type="date">
+        <label for="date-to">To date</label>
+        <input id="date-to" type="date">
+        <label for="booking-status">Booking status</label>
+        <select id="booking-status">
+          <option value="">All statuses</option>
+          <option value="booked">Booked</option>
+          <option value="pending">Pending</option>
+          <option value="unknown">Unknown</option>
+        </select>
+        <label for="description">Description</label>
+        <input id="description" type="text" autocomplete="off">
+        <label for="category">Bank-suggested category</label>
+        <select id="category">
+          <option value="">All categories</option>
+          <option value="none">No recorded category</option>
+        </select>
+        <p id="category-status" role="status"></p>
+        <button id="category-retry" type="button" hidden>Retry categories</button>
+        <label for="amount-min">Minimum amount (EUR)</label>
+        <input id="amount-min" type="text" inputmode="decimal" autocomplete="off">
+        <label for="amount-max">Maximum amount (EUR)</label>
+        <input id="amount-max" type="text" inputmode="decimal" autocomplete="off">
+        <button type="submit">Apply filters</button>
+        <button id="clear-filters" type="button">Clear filters</button>
+      </form>
+      <p id="transaction-status" role="status" aria-live="polite"></p>
+      <button id="transaction-import" type="button" data-view="import" hidden>Import transactions</button>
+      <button id="transaction-retry" type="button" hidden>Retry transactions</button>
+      <div id="transaction-list"></div>
+      <nav aria-label="Transaction pages">
+        <button id="previous-page" type="button" hidden>Previous page</button>
+        <button id="next-page" type="button" hidden>Next page</button>
+      </nav>
+      <div id="transaction-details" aria-live="polite"></div>
+    </section>
+  </main>
+</body>
+</html>

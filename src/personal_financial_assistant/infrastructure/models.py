@@ -1,6 +1,7 @@
 """Persistence schema for bank-export provenance and occurrences."""
 
 from datetime import date, datetime
+from uuid import UUID, uuid4
 
 from sqlalchemy import (
     BigInteger,
@@ -9,11 +10,13 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     String,
     Table,
     Text,
     UniqueConstraint,
+    Uuid,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
@@ -29,6 +32,72 @@ class SelectedAccount(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     account_reference: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
     display_label: Mapped[str | None] = mapped_column(Text)
+
+
+class UIImportRun(Base):
+    """Durable, non-sensitive status of one UI-initiated import."""
+
+    __tablename__ = "ui_import_run"
+    __table_args__ = (
+        CheckConstraint(
+            "state IN ('running', 'succeeded', 'no_files', 'failed', 'unknown')",
+            name="ck_ui_import_run_state",
+        ),
+        CheckConstraint(
+            "(state = 'running' AND finished_at IS NULL) OR "
+            "(state <> 'running' AND finished_at IS NOT NULL)",
+            name="ck_ui_import_run_finished",
+        ),
+        CheckConstraint(
+            "(state = 'failed' AND error_code IS NOT NULL AND error_message IS NOT NULL) "
+            "OR (state <> 'failed' AND error_code IS NULL AND error_message IS NULL)",
+            name="ck_ui_import_run_error",
+        ),
+        *(
+            CheckConstraint(f"{name} >= 0", name=f"ck_ui_import_run_{name}")
+            for name in (
+                "files_seen",
+                "files_processed",
+                "files_unchanged",
+                "rows_read",
+                "transactions_added",
+                "transactions_updated",
+                "observations_unchanged",
+                "unresolved_observations",
+            )
+        ),
+        CheckConstraint(
+            "(state IN ('succeeded', 'no_files') AND "
+            "files_seen IS NOT NULL AND files_processed IS NOT NULL AND "
+            "files_unchanged IS NOT NULL AND rows_read IS NOT NULL AND "
+            "transactions_added IS NOT NULL AND transactions_updated IS NOT NULL AND "
+            "observations_unchanged IS NOT NULL AND unresolved_observations IS NOT NULL) "
+            "OR (state NOT IN ('succeeded', 'no_files') AND "
+            "files_seen IS NULL AND files_processed IS NULL AND "
+            "files_unchanged IS NULL AND rows_read IS NULL AND "
+            "transactions_added IS NULL AND transactions_updated IS NULL AND "
+            "observations_unchanged IS NULL AND unresolved_observations IS NULL)",
+            name="ck_ui_import_run_counts",
+        ),
+        Index("ix_ui_import_run_latest", "started_at", "id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid, primary_key=True, default=uuid4)
+    state: Mapped[str] = mapped_column(String(10), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    files_seen: Mapped[int | None] = mapped_column(BigInteger)
+    files_processed: Mapped[int | None] = mapped_column(BigInteger)
+    files_unchanged: Mapped[int | None] = mapped_column(BigInteger)
+    rows_read: Mapped[int | None] = mapped_column(BigInteger)
+    transactions_added: Mapped[int | None] = mapped_column(BigInteger)
+    transactions_updated: Mapped[int | None] = mapped_column(BigInteger)
+    observations_unchanged: Mapped[int | None] = mapped_column(BigInteger)
+    unresolved_observations: Mapped[int | None] = mapped_column(BigInteger)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(Text)
 
 
 class SourceFile(Base):

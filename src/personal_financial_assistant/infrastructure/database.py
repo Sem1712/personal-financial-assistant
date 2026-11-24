@@ -4,6 +4,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
@@ -11,6 +12,14 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from .settings import Settings
+
+
+class PinnedConnectionLost(Exception):
+    """A pinned connection cannot safely be reused."""
+
+
+class PinnedConnectionBusy(Exception):
+    """The owner must finish its transaction before starting a new one."""
 
 
 def create_engine(settings: Settings) -> AsyncEngine:
@@ -33,8 +42,16 @@ async def engine_scope(settings: Settings) -> AsyncGenerator[AsyncEngine]:
 
 
 @asynccontextmanager
-async def session_scope(engine: AsyncEngine) -> AsyncGenerator[AsyncSession]:
-    """Open one transaction, committing on success and rolling back on failure."""
+async def session_scope(
+    engine: AsyncEngine | AsyncConnection,
+) -> AsyncGenerator[AsyncSession]:
+    """Own a transaction; a pinned connection must be valid and outside a transaction."""
+    if isinstance(engine, AsyncConnection) and (engine.closed or engine.invalidated):
+        raise PinnedConnectionLost("Pinned database connection unavailable.")
+    if isinstance(engine, AsyncConnection) and engine.in_transaction():
+        raise PinnedConnectionBusy(
+            "Pinned database connection has an active transaction."
+        )
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory.begin() as session:
         yield session
