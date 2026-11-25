@@ -11,6 +11,29 @@ from personal_financial_assistant.ui import app as ui_app
 
 
 @pytest.mark.asyncio
+async def test_local_stylesheets_and_license_preserve_security_headers() -> None:
+    app = ui_app.create_app()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://127.0.0.1:8765",
+    ) as client:
+        page = await client.get("/")
+        assert '<html lang="en" data-bs-theme="dark">' in page.text
+        assert page.text.index("/static/bootstrap.min.css") < page.text.index(
+            "/static/styles.css"
+        )
+        for name in ("bootstrap.min.css", "styles.css", "bootstrap.LICENSE.txt"):
+            response = await client.get(f"/static/{name}")
+            assert response.status_code == 200
+            assert response.headers["cache-control"] == "no-store"
+            assert response.headers["content-security-policy"] == (
+                "default-src 'self'; object-src 'none'; base-uri 'none'; "
+                "frame-ancestors 'none'"
+            )
+            assert response.headers["x-content-type-options"] == "nosniff"
+
+
+@pytest.mark.asyncio
 async def test_lifespan_owns_and_disposes_engine(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

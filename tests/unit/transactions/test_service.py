@@ -14,6 +14,8 @@ from personal_financial_assistant.transactions.service import categories, detail
 class SearchRow(NamedTuple):
     occurrence: TransactionOccurrence | None
     history_exists: bool
+    operations: list[str] | None
+    details: list[str] | None
 
 
 @pytest.mark.asyncio
@@ -46,7 +48,10 @@ async def test_search_projects_distinct_occurrences_and_next_cursor(
         reconciliation_state="pending-only",
     )
     result = MagicMock()
-    result.all.return_value = [SearchRow(first, True), SearchRow(second, True)]
+    result.all.return_value = [
+        SearchRow(first, True, ["Coffee", "Other source"], ["Recorded detail"]),
+        SearchRow(second, True, None, None),
+    ]
     session.execute.return_value = result
     filters = TransactionFilters.model_validate({"page_size": 1})
     page = await search(engine, filters)
@@ -54,6 +59,8 @@ async def test_search_projects_distinct_occurrences_and_next_cursor(
     assert [item.id for item in page.items] == ["2"]
     assert page.items[0].amount_minor == "-1"
     assert page.items[0].ongoing_expense
+    assert page.items[0].operations == ["Coffee", "Other source"]
+    assert page.items[0].details == ["Recorded detail"]
     assert page.next_cursor is not None
     assert TransactionFilters.model_validate(
         {"cursor": page.next_cursor}
@@ -61,6 +68,10 @@ async def test_search_projects_distinct_occurrences_and_next_cursor(
         day,
         2,
     )
+    result.all.return_value = [SearchRow(second, True, None, None)]
+    unlinked = await search(engine, filters)
+    assert unlinked.items[0].operations == []
+    assert unlinked.items[0].details == []
 
 
 @pytest.mark.asyncio

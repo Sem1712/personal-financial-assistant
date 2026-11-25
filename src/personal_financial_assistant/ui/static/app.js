@@ -34,6 +34,8 @@ export async function request(path, options = {}) {
 let navigationLocked = true;
 let navigationSequence = 0;
 const navigationStatus = document.querySelector("#navigation-status");
+const viewRoots = ["chat", "import", "transactions"].map((id) => document.getElementById(id));
+let visibleView = "chat";
 
 export function showView(name, force = false) {
   const sequence = ++navigationSequence;
@@ -57,10 +59,20 @@ export function showView(name, force = false) {
 }
 
 function renderView(name) {
-  navigationStatus.textContent = "";
-  for (const section of document.querySelectorAll("main section")) {
+  const changed = visibleView !== name;
+  if (changed) {
+    navigationStatus.textContent = "";
+    if (visibleView === "transactions") transactions.leave();
+  }
+  for (const section of viewRoots) {
     section.hidden = section.id !== name;
   }
+  for (const button of document.querySelectorAll(".app-navigation [data-view]")) {
+    if (button.dataset.view === name) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  }
+  visibleView = name;
+  if (changed) document.querySelector(`#${name} h2`).focus();
   if (name === "transactions") void transactions.refresh();
 }
 

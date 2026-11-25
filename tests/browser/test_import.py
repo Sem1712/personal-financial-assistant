@@ -765,6 +765,10 @@ def test_folder_rejection_survives_polling_and_does_not_hide_running_status(
     expect(
         page.get_by_text("Enter a non-empty local folder", exact=False)
     ).to_be_visible()
+    expect(page.get_by_label("Local folder")).to_have_attribute("aria-invalid", "true")
+    expect(page.get_by_label("Local folder")).to_have_attribute(
+        "aria-describedby", "import-folder-help import-folder-error"
+    )
     page.wait_for_timeout(1500)
     expect(
         page.get_by_text("Enter a non-empty local folder", exact=False)
@@ -783,3 +787,118 @@ def test_folder_rejection_survives_polling_and_does_not_hide_running_status(
     expect(
         page.get_by_text("Enter a non-empty local folder", exact=False)
     ).to_be_hidden()
+    expect(page.get_by_label("Local folder")).not_to_have_attribute(
+        "aria-invalid", "true"
+    )
+
+
+def test_import_status_kind_and_unchanged_announcement(
+    page: Page, local_app: LocalApp
+) -> None:
+    page.clock.install()
+    page.goto("http://127.0.0.1:8765/")
+    page.get_by_role("button", name="Import", exact=True).click()
+    local_app.run = import_run("succeeded")
+    page.clock.fast_forward(1001)
+    expect(page.locator("#import-status")).to_have_attribute("data-kind", "successful")
+    page.evaluate(
+        """() => {
+            window.statusMutations = 0;
+            new MutationObserver(() => window.statusMutations++)
+                .observe(document.querySelector('#import-status'), {childList: true});
+        }"""
+    )
+    page.clock.fast_forward(2001)
+    assert page.evaluate("window.statusMutations") == 0
+    local_app.run = import_run("unknown")
+    page.clock.fast_forward(1001)
+    expect(page.locator("#import-status")).to_have_attribute("data-kind", "unknown")
+
+
+def test_folder_rejection_does_not_become_previous_import_success(
+    page: Page, local_app: LocalApp
+) -> None:
+    local_app.run = import_run("succeeded")
+    page.clock.install()
+    page.goto("http://127.0.0.1:8765/")
+    page.get_by_role("button", name="Import", exact=True).click()
+    expect(page.locator("#import-status")).to_have_attribute("data-kind", "successful")
+    page.get_by_label("Local folder").fill("   ")
+    page.get_by_role("button", name="Start import").click()
+    expect(page.get_by_label("Local folder")).to_have_attribute("aria-invalid", "true")
+    expect(page.get_by_role("button", name="Start import")).to_be_enabled()
+    page.clock.fast_forward(2001)
+    expect(page.locator("#import-status")).to_have_attribute(
+        "data-kind", "invalid-input"
+    )
+    expect(page.locator("#import-status")).to_contain_text(
+        "Your import was not started."
+    )
+    expect(page.locator("#import-status")).to_contain_text(
+        "Earlier import outcome: Import completed."
+    )
+    expect(page.get_by_label("Local folder")).to_have_value("   ")
+    expect(page.locator("#import-counts")).to_contain_text("Transactions added: 2")
+
+
+@pytest.mark.parametrize("action", ["start", "retry", "resolve", "dismiss"])
+def test_import_actions_keep_focus_when_controls_become_unavailable(
+    page: Page, local_app: LocalApp, action: str
+) -> None:
+    page.clock.install()
+    if action == "retry":
+        local_app.status_failure = True
+    elif action in ("resolve", "dismiss"):
+        ids = ["00000000-0000-0000-0000-000000000001"]
+        if action == "dismiss":
+            ids.append("00000000-0000-0000-0000-000000000002")
+            for identifier in ids:
+                run = import_run("succeeded")
+                run["id"] = identifier
+                local_app.runs[identifier] = run
+        page.add_init_script(
+            f"{json.dumps(ids)}.forEach(id => "
+            "localStorage.setItem('pfa-pending-import:' + id, '1'))"
+        )
+    page.goto("http://127.0.0.1:8765/")
+    page.get_by_role("button", name="Import", exact=True).click()
+    if action == "start":
+        local_app.stall_start = True
+        page.get_by_label("Local folder").fill("/synthetic")
+        control = page.get_by_role("button", name="Start import")
+    elif action == "retry":
+        control = page.get_by_role("button", name="Retry status")
+        expect(control).to_be_visible()
+        local_app.status_failure = False
+    elif action == "resolve":
+        control = page.get_by_role("button", name="Resolve unrecorded import")
+    else:
+        control = page.get_by_role("button", name="Dismiss recovered outcomes")
+    control.focus()
+    page.keyboard.press("Enter")
+    if action == "start":
+        expect(control).to_be_disabled()
+    else:
+        expect(control).to_be_hidden()
+    expect(page.locator("#import-status")).to_be_focused()
+
+
+def test_import_recovery_does_not_steal_focus_after_user_moves(
+    page: Page, local_app: LocalApp
+) -> None:
+    page.clock.install()
+    local_app.status_failure = True
+    page.goto("http://127.0.0.1:8765/")
+    page.get_by_role("button", name="Import", exact=True).click()
+    local_app.hold_status = True
+    retry = page.get_by_role("button", name="Retry status")
+    retry.focus()
+    page.keyboard.press("Enter")
+    navigation = page.get_by_role("button", name="Import", exact=True)
+    navigation.focus()
+    assert local_app.pending_status is not None
+    local_app.hold_status = False
+    local_app.status_failure = False
+    local_app.serve(local_app.pending_status)
+    expect(retry).to_be_hidden()
+    expect(navigation).to_be_focused()

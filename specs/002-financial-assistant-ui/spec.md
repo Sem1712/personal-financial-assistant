@@ -102,7 +102,7 @@ The user sees conversation as the prominent intended destination of the assistan
 - **FR-006**: Import failures MUST show a safe, actionable reason when available, MUST NOT expose raw financial payloads or credentials in error messages, and MUST NOT be presented as successful or partially successful. Imports retain existing all-or-nothing batch behavior.
 - **FR-007**: The interface MUST prevent a second import from being started through it while one is running; a conflict with another invocation MUST be reported as a failure.
 - **FR-008**: The transaction view MUST list retained occurrences, not individual observations, with date, exact signed amount, currency, booking status including unknown, and reconciliation state. Distinct occurrences with identical displayed values MUST remain distinct.
-- **FR-009**: The user MUST be able to filter by an inclusive date range, booking status (pending, booked, or unknown), case-insensitive text in source operation or details, bank-suggested category, and inclusive signed amount range in EUR. Active filters MUST combine using all selected criteria; clearing them MUST restore all occurrences. Text and category filters each match an occurrence when any linked observation matches; the matching observations need not be the same.
+- **FR-009**: The user MUST be able to filter by an inclusive date range, booking status (pending, booked, or unknown), case-insensitive text in source operation or details, bank-suggested category, inclusive absolute amount range in EUR, and All / Withdrawals / Deposits. Withdrawals are strictly negative and deposits strictly positive; zero belongs to All. Active filters MUST combine using all selected criteria; clearing them MUST restore all occurrences. Text and category filters each match an occurrence when any linked observation matches; the matching observations need not be the same.
 - **FR-010**: The interface MUST reject an end date earlier than the start date with an explanatory validation message. Either date boundary MAY be omitted.
 - **FR-011**: The user MUST be able to inspect available linked source operation, details, and categories for an occurrence. Conflicting source values MUST remain distinguishable; missing values MUST be identified as unavailable. Categories MUST be labeled as bank suggestions rather than authoritative classifications.
 - **FR-012**: The interface MUST identify unresolved reconciliation and unknown booking status without inventing certainty. Only a pending debit that is not unresolved may be labeled an ongoing expense.
@@ -111,7 +111,7 @@ The user sees conversation as the prominent intended destination of the assistan
 - **FR-015**: The interface MUST indicate that records reflect supplied exports, not a live bank balance or a guarantee of complete account history.
 - **FR-016**: Bank exports and displayed financial data MUST remain within the local system. The interface MUST NOT transmit them to external services or include them in logs.
 - **FR-017**: The category filter MUST match the selected bank-suggested category against linked observations and MUST allow the user to find occurrences whose linked observations have no source category. An occurrence with conflicting categories matches each category reported for it.
-- **FR-018**: Amount boundaries MUST accept exact signed EUR values to cent precision, and either boundary MAY be omitted. Invalid values or a minimum greater than the maximum MUST produce an explanatory validation message.
+- **FR-018**: Amount boundaries MUST accept exact nonnegative EUR values to cent precision, from zero through 2^63 cents, matching absolute amounts without losing stored signs. Either boundary MAY be omitted. Invalid values, negative values or a minimum greater than the maximum MUST produce an explanatory validation message. This supersedes the original signed-bound clarification.
 - **FR-019**: While an import is running, the interface MUST keep the user on the import screen by blocking navigation to other application areas and explaining that the import must finish first. Once the operation finishes, navigation MUST be available again.
 - **FR-020**: When the user returns after a refresh, closure, or disconnection during an import, if the interface cannot establish its outcome, it MUST identify the outcome as unknown rather than claim success or failure.
 
@@ -121,7 +121,7 @@ The user sees conversation as the prominent intended destination of the assistan
 - **Import result**: The operation's state, counts, and non-sensitive failure or reconciliation information.
 - **Transaction occurrence**: A retained financial occurrence with a date, exact signed amount, currency, booking status, and reconciliation state.
 - **Source observation**: An export's recorded description, suggested category, and status linked to an occurrence; multiple observations can disagree.
-- **Transaction filters**: Optional date boundaries, booking status, description search, source category, and signed amount boundaries applied to the displayed occurrences.
+- **Transaction filters**: Optional date boundaries, booking status, description search, source category, absolute amount boundaries, and signed transaction direction applied to the displayed occurrences.
 
 ## Success Criteria *(mandatory)*
 
@@ -129,7 +129,7 @@ The user sees conversation as the prominent intended destination of the assistan
 
 - **SC-001**: In a usability test with at least five representative users and a prepared valid export folder, at least 4 of 5 users start an import and locate its outcome within two minutes without assistance.
 - **SC-002**: For every tested successful, empty, empty with unavailable storage, repeated, invalid, timed-out, and conflicting import, the interface displays the correct outcome and all applicable result counts, with no failure presented as success.
-- **SC-003**: For a reference set of at least 100 synthetic occurrences, every tested combination of date, status, text, category, and signed amount filters returns exactly the expected occurrences, including distinct identical-looking occurrences and conflicting source categories.
+- **SC-003**: For a reference set of at least 100 synthetic occurrences, every tested combination of date, status, text, category, absolute amount and direction filters returns exactly the expected occurrences, including distinct identical-looking occurrences and conflicting source categories.
 - **SC-004**: For every tested unresolved occurrence, unknown status, pending debit, pending credit, and conflicting source category, the interface preserves the correct uncertainty and labeling.
 - **SC-005**: In the same usability test, at least 4 of 5 users locate transaction filtering and correctly identify conversation and reports as unavailable without assistance.
 - **SC-006**: In all tested empty-history, no-match, invalid-date, invalid-amount, and retrieval-failure cases, the interface displays the appropriate distinct state and next action.

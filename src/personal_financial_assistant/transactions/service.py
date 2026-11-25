@@ -4,7 +4,8 @@ from datetime import date
 from typing import cast
 
 from pydantic import BaseModel
-from sqlalchemy import and_, literal, or_, select, true
+from sqlalchemy import Numeric, and_, func, literal, or_, select, true
+from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from personal_financial_assistant.infrastructure.models import (
@@ -27,6 +28,8 @@ class TransactionItem(BaseModel):
     booking_status: str
     reconciliation_state: str
     ongoing_expense: bool
+    operations: list[str]
+    details: list[str]
 
 
 class Observation(BaseModel):
@@ -46,7 +49,9 @@ class TransactionPage(BaseModel):
     history_exists: bool
 
 
-def _item(occurrence: TransactionOccurrence) -> TransactionItem:
+def _item(
+    occurrence: TransactionOccurrence, operations: list[str], details: list[str]
+) -> TransactionItem:
     return TransactionItem(
         id=str(occurrence.id),
         date=occurrence.transaction_date,
@@ -55,11 +60,13 @@ def _item(occurrence: TransactionOccurrence) -> TransactionItem:
         booking_status=occurrence.booking_status or "unknown",
         reconciliation_state=occurrence.reconciliation_state,
         ongoing_expense=occurrence.is_ongoing_expense,
+        operations=operations,
+        details=details,
     )
 
 
 async def search(engine: AsyncEngine, filters: TransactionFilters) -> TransactionPage:
-    """Return one stable page and a consistent indication of existing history."""
+    """Return a stable page with distinct recorded source text and history availability."""
     occurrence = TransactionOccurrence
     observation = TransactionObservation
     linked = occurrence_observation.join(
@@ -74,10 +81,21 @@ async def search(engine: AsyncEngine, filters: TransactionFilters) -> Transactio
         query = query.where(occurrence.booking_status.is_(None))
     elif filters.booking_status is not None:
         query = query.where(occurrence.booking_status == filters.booking_status)
+    # Neither bigint abs nor bigint bindings can represent the magnitude of -2^63.
+    numeric_cents = Numeric(20, 0)
+    magnitude = func.abs(occurrence.amount_minor.cast(numeric_cents))
     if filters.amount_min is not None:
-        query = query.where(occurrence.amount_minor >= filters.amount_min)
+        query = query.where(
+            magnitude >= literal(filters.amount_min, type_=numeric_cents)
+        )
     if filters.amount_max is not None:
-        query = query.where(occurrence.amount_minor <= filters.amount_max)
+        query = query.where(
+            magnitude <= literal(filters.amount_max, type_=numeric_cents)
+        )
+    if filters.direction == "withdrawals":
+        query = query.where(occurrence.amount_minor < 0)
+    elif filters.direction == "deposits":
+        query = query.where(occurrence.amount_minor > 0)
     if filters.text:
         text = (
             filters.text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -131,8 +149,19 @@ async def search(engine: AsyncEngine, filters: TransactionFilters) -> Transactio
     )
     history = select(literal(1)).select_from(occurrence).correlate(None).exists()
     anchor = select(literal(1)).subquery()
+    summaries = [
+        select(func.array_agg(aggregate_order_by(field.distinct(), field)))
+        .select_from(linked)
+        .where(
+            occurrence_observation.c.occurrence_id == occurrence.id,
+            field.is_not(None),
+        )
+        .correlate(occurrence)
+        .scalar_subquery()
+        for field in (observation.operation, observation.details)
+    ]
     statement = (
-        select(occurrence, history.label("history_exists"))
+        select(occurrence, history.label("history_exists"), summaries[0], summaries[1])
         .select_from(
             anchor.outerjoin(page, true()).outerjoin(
                 occurrence, occurrence.id == page.c.id
@@ -144,18 +173,23 @@ async def search(engine: AsyncEngine, filters: TransactionFilters) -> Transactio
         rows = (await session.execute(statement)).all()
     history_exists = rows[0].history_exists
     # SQLAlchemy types ORM entities as non-null even on the nullable side of an outer join.
-    possible_occurrences = (cast(TransactionOccurrence | None, row[0]) for row in rows)
-    occurrences = [
-        occurrence for occurrence in possible_occurrences if occurrence is not None
+    items = [
+        _item(
+            occurrence,
+            cast(list[str] | None, row[2]) or [],
+            cast(list[str] | None, row[3]) or [],
+        )
+        for row in rows
+        if (occurrence := cast(TransactionOccurrence | None, row[0])) is not None
     ]
-    has_next = len(occurrences) > filters.page_size
-    occurrences = occurrences[: filters.page_size]
+    has_next = len(items) > filters.page_size
+    items = items[: filters.page_size]
     next_cursor = None
     if has_next:
-        last = occurrences[-1]
-        next_cursor = filters.encode_cursor(last.transaction_date, last.id)
+        last = items[-1]
+        next_cursor = filters.encode_cursor(last.date, int(last.id))
     return TransactionPage(
-        items=[_item(occurrence) for occurrence in occurrences],
+        items=items,
         next_cursor=next_cursor,
         history_exists=history_exists,
     )
@@ -195,7 +229,24 @@ async def detail(engine: AsyncEngine, occurrence_id: int) -> TransactionDetail |
         if observation is not None
     ]
     return TransactionDetail(
-        **_item(rows[0][0]).model_dump(), observations=observations
+        **_item(
+            rows[0][0],
+            sorted(
+                {
+                    source.operation
+                    for source in observations
+                    if source.operation is not None
+                }
+            ),
+            sorted(
+                {
+                    source.details
+                    for source in observations
+                    if source.details is not None
+                }
+            ),
+        ).model_dump(),
+        observations=observations,
     )
 
 

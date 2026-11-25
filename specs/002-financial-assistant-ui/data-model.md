@@ -27,13 +27,14 @@ An unlinked occurrence can be unresolved; it has no confirmed source description
 | `booking_status` | Optional `pending`, `booked`, or `unknown`; unknown maps only to a null occurrence status. |
 | `text` | Optional case-insensitive substring in the operation or details of any linked observation; literal characters, not SQL wildcard patterns. |
 | `category` | Optional exact bank-suggested category, or explicit `no_recorded_category`; the latter means no linked observation has a non-null category, including no links. |
-| `amount_min`, `amount_max` | Optional signed decimal EUR strings, inclusive; accept at most two fractional digits, convert exactly to signed 64-bit integer cents; minimum cannot exceed maximum. |
+| `amount_min`, `amount_max` | Optional nonnegative decimal EUR strings, inclusive against absolute amounts; at most two fractional digits, exact integer cents from 0 through 2^63; minimum cannot exceed maximum. |
+| `direction` | Optional `withdrawals` (amount < 0) or `deposits` (amount > 0); omitted/null means All, including zero. |
 | `cursor` | Optional position in descending transaction date, then descending occurrence ID; must match the current filters. |
-| `page_size` | Positive bounded integer, default 50, maximum 100. |
+| `page_size` | Positive bounded integer, default 100, maximum 100. |
 
 All active filters combine with AND. Text and category use separate existential checks against linked observations, and can match different observations. Return one projection per occurrence. Compute the result page and whether any history exists in one SQL statement or a repeatable-read transaction, so zero history and no filter matches are distinct even during an import. Clear filters resets the cursor. Stable ordering avoids merging identical-looking occurrences; pagination does not promise a frozen snapshot across concurrent imports.
 
-The list projection contains occurrence ID as a decimal integer **string**, date, signed minor-unit amount as a decimal integer **string**, currency, booking status or `unknown`, reconciliation state and ongoing-expense boolean. Strings avoid browser precision loss for 64-bit values. Only non-unresolved pending debits are ongoing expenses. The detail projection contains these fields plus all linked observations' operation, details, source category and status; missing values are null, and an empty collection means no linked evidence. Financial values are never converted through binary floating point.
+The list projection contains occurrence ID as a decimal integer **string**, date, signed minor-unit amount as a decimal integer **string**, currency, booking status or `unknown`, reconciliation state, ongoing-expense boolean, and sorted distinct non-null linked `operations` and `details` arrays. Strings avoid browser precision loss for 64-bit values. Empty arrays explicitly indicate missing source text. Only non-unresolved pending debits are ongoing expenses. The detail projection contains these fields plus all linked observations' operation, details, source category and status; missing values are null, and an empty collection means no linked evidence. Financial values are never converted through binary floating point.
 
 ## UI import run (new PostgreSQL entity)
 

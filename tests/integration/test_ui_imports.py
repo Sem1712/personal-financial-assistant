@@ -318,7 +318,11 @@ async def test_imported_history_is_available_via_transaction_http(
             assert run.state == "succeeded"
             after = await client.post(
                 "/api/transactions/search",
-                json={"text": "synthetic purchase", "amount_min": "-12.34"},
+                json={
+                    "text": "synthetic purchase",
+                    "amount_min": "12.34",
+                    "direction": "withdrawals",
+                },
             )
             assert after.status_code == 200
             items = after.json()["items"]

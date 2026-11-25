@@ -54,25 +54,22 @@ def _minor_units(value: object) -> int | None:
     if value is None:
         return None
     if not isinstance(value, str) or not re.fullmatch(
-        r"[+-]?(?:[0-9]+(?:\.[0-9]{0,2})?|\.[0-9]{1,2})", value
+        r"[+]?(?:[0-9]+(?:\.[0-9]{0,2})?|\.[0-9]{1,2})", value
     ):
-        raise ValueError("Invalid EUR amount")
-    negative = value.startswith("-")
-    unsigned = value.lstrip("+-")
+        raise ValueError("Invalid nonnegative EUR amount")
+    unsigned = value.lstrip("+")
     whole, _, fraction = unsigned.partition(".")
     whole = whole.lstrip("0") or "0"
     if len(whole) > 17:
         raise ValueError("EUR amount out of range")
     result = int(whole) * 100 + int(fraction.ljust(2, "0"))
-    if negative:
-        result = -result
-    if not -(2**63) <= result < 2**63:
+    if result > 2**63:
         raise ValueError("EUR amount out of range")
     return result
 
 
 class TransactionFilters(BaseModel):
-    """Validated filter set with exact signed EUR-cent boundaries."""
+    """Validated filters with exact absolute EUR-cent bounds and signed direction."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -83,8 +80,9 @@ class TransactionFilters(BaseModel):
     category: Category | None = None
     amount_min: int | None = None
     amount_max: int | None = None
+    direction: Literal["withdrawals", "deposits"] | None = None
     cursor: str | None = Field(default=None, max_length=1024)
-    page_size: int = Field(default=50, strict=True, ge=1, le=100)
+    page_size: int = Field(default=100, strict=True, ge=1, le=100)
 
     @field_validator("date_from", "date_to", mode="before")
     @classmethod

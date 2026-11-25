@@ -1,8 +1,9 @@
 const POLL_INTERVAL = 1000;
 const LEGACY_RUN_KEY = "pfa-pending-import";
 const RUN_KEY_PREFIX = "pfa-pending-import:";
-const INPUT_NOTICE = "Enter a non-empty local folder path without invalid characters and try again.";
+const INPUT_NOTICE = "Your import was not started. Enter a non-empty local folder path without invalid characters and try again.";
 const STORAGE_NOTICE = "Browser storage is unavailable. Enable it before using imports.";
+const STATUS_KINDS = { running: "running", succeeded: "successful", no_files: "no-files", failed: "failed", unknown: "unknown" };
 const COUNT_LABELS = [
   ["files_seen", "Files seen"],
   ["files_processed", "Files processed"],
@@ -45,6 +46,7 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
   const retry = document.querySelector("#import-retry");
   const resolve = document.querySelector("#import-resolve");
   const resolveHelp = document.querySelector("#import-resolve-help");
+  const folderError = document.querySelector("#import-folder-error");
   let locked = true;
   let timer = null;
   let currentRequest = null;
@@ -55,6 +57,7 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
   let hasActiveRun = false;
   let conflictPending = false;
   let notice = "";
+  let noticeKind = null;
   let storageUnavailable = false;
   let missingIds = [];
 
@@ -102,15 +105,32 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
     }
   }
 
+  function focusStatusIfActive(control) {
+    if (document.activeElement === control && !status.closest("[hidden]")) status.focus();
+  }
+
   function lock(value) {
     locked = value;
+    if (value) {
+      focusStatusIfActive(start);
+      focusStatusIfActive(folder);
+    }
     start.disabled = value;
     folder.disabled = value;
     setLocked(value);
   }
 
-  function message(value) {
-    status.textContent = notice ? `${notice} ${value}` : value;
+  function message(value, kind = "informational") {
+    status.dataset.kind = noticeKind === "invalid-input" ? noticeKind : kind === "informational" && noticeKind ? noticeKind : kind;
+    const text = [notice, value].filter(Boolean).join(" ");
+    if (status.textContent !== text) status.textContent = text;
+  }
+
+  function setFolderInvalid(value) {
+    folder.classList.toggle("is-invalid", value);
+    if (value) folder.setAttribute("aria-invalid", "true");
+    else folder.removeAttribute("aria-invalid");
+    folderError.textContent = value ? "Use a non-empty local folder path without invalid characters." : "";
   }
 
   function renderCounts(values) {
@@ -124,6 +144,8 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
     if (values.unresolved_observations > 0) {
       const item = document.createElement("li");
       item.textContent = "Unresolved observations could not be confidently linked to a transaction.";
+      item.className = "status-message count-warning";
+      item.dataset.kind = "unknown";
       counts.append(item);
     }
   }
@@ -134,6 +156,7 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
   }
 
   function showResolve(show) {
+    if (!show) focusStatusIfActive(resolve);
     resolve.hidden = !show;
     resolveHelp.hidden = !show;
   }
@@ -145,7 +168,7 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
     message(
       "Import status is unknown. " +
       (storageUnavailable ? "Storage or import ownership may be unavailable. " : "") +
-      "Retry status; do not start another import.",
+      "Retry status; do not start another import.", "unknown",
     );
     retry.hidden = false;
     showResolve(canResolve);
@@ -155,7 +178,8 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
     lock(true);
     showImport();
     renderCounts(null);
-    message(STORAGE_NOTICE);
+    message(STORAGE_NOTICE, "storage-unavailable");
+    focusStatusIfActive(retry);
     retry.hidden = true;
     showResolve(false);
   }
@@ -169,11 +193,14 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
 
   function renderOutcomes(runs) {
     outcomes.replaceChildren();
-    dismiss.hidden = pendingIds.length < 2 || completedIds.length === 0;
+    const hideDismiss = pendingIds.length < 2 || completedIds.length === 0;
+    if (hideDismiss) focusStatusIfActive(dismiss);
+    dismiss.hidden = hideDismiss;
     if (pendingIds.length < 2) return;
     for (const run of runs) {
       if (!run || run.state === "running" || !completedIds.includes(run.id)) continue;
       const item = document.createElement("li");
+      item.dataset.kind = STATUS_KINDS[run.state];
       item.textContent = `${run.id}: ${outcome(run)}`;
       if (run.counts) {
         const details = document.createElement("ul");
@@ -221,7 +248,7 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
         lock(true);
         showImport();
         renderCounts(null);
-        message("Import status is unknown. Another import is running. Navigation is unavailable until it finishes. Retry status; do not start another import.");
+        message("Import status is unknown. Another import is running. Navigation is unavailable until it finishes. Retry status; do not start another import.", "unknown");
         retry.hidden = false;
         showResolve(false);
         return;
@@ -229,6 +256,7 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
       unavailable(false, missingIds.length > 0);
       return;
     }
+    focusStatusIfActive(retry);
     retry.hidden = true;
     showResolve(false);
     renderCounts(pendingIds.length > 1 ? null : (ownRun || current)?.counts);
@@ -237,7 +265,7 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
       lock(true);
       showImport();
       const prefix = pendingIds.length > 1 ? "Import running." : ownRun && ownRun.id !== current.id ? `${outcome(ownRun, true)} Another import is running.` : "Import running.";
-      message(`${prefix} Navigation is unavailable until it finishes.`);
+      message(`${prefix} Navigation is unavailable until it finishes.`, "running");
       return;
     }
     if (runs.some((run) => run?.state === "running")) {
@@ -253,7 +281,8 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
     hasActiveRun = false;
     lock(false);
     const shown = ownRun || current;
-    message(pendingIds.length > 1 ? "Recovered import outcomes are listed below." : outcome(shown, Boolean(ownRun && current && ownRun.id !== current.id)));
+    const result = outcome(shown, Boolean(ownRun && current && ownRun.id !== current.id));
+    message(pendingIds.length > 1 ? "Recovered import outcomes are listed below." : noticeKind === "invalid-input" ? `Earlier import outcome: ${result}` : result, pendingIds.length > 1 ? "informational" : STATUS_KINDS[shown.state]);
   }
 
   async function refresh(fresh = false) {
@@ -320,6 +349,8 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
     event.preventDefault();
     if (locked) return;
     notice = "";
+    noticeKind = null;
+    setFolderInvalid(false);
     const storedIds = readPendingRuns();
     if (!storedIds) {
       storageError();
@@ -351,8 +382,9 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
     hasActiveRun = true;
     lock(true);
     renderCounts(null);
+    focusStatusIfActive(retry);
     retry.hidden = true;
-    message("Starting import...");
+    message("Starting import...", "running");
     try {
       const result = await request("/api/imports", {
         method: "POST",
@@ -378,7 +410,9 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
         ownId = null;
         hasActiveRun = false;
         notice = INPUT_NOTICE;
-        message("Your import was not started.");
+        noticeKind = "invalid-input";
+        setFolderInvalid(true);
+        message("", "invalid-input");
         await refresh(true);
       } else if (error instanceof HttpError && error.code === "import_request_closed") {
         await refresh(true);
@@ -390,6 +424,7 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
         ownId = null;
         conflictPending = true;
         notice = "Your import was not started because another import is running.";
+        noticeKind = "failed";
         unavailable();
         await refresh(true);
       } else if (error instanceof HttpError && error.code === "import_not_started") {
@@ -400,6 +435,7 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
         ownId = null;
         hasActiveRun = false;
         notice = "Your import was not started. Storage or import ownership is unavailable.";
+        noticeKind = "storage-unavailable";
         await refresh(true);
       } else {
         unavailable();
@@ -408,10 +444,23 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
     }
   });
 
+  folder.addEventListener("invalid", (event) => {
+    event.preventDefault();
+    notice = INPUT_NOTICE;
+    noticeKind = "invalid-input";
+    setFolderInvalid(true);
+    message("", "invalid-input");
+    folder.focus();
+  });
+  folder.addEventListener("input", () => {
+    setFolderInvalid(false);
+  });
   retry.addEventListener("click", () => void refresh());
   resolve.addEventListener("click", async () => {
+    focusStatusIfActive(resolve);
     resolve.disabled = true;
     notice = "";
+    noticeKind = null;
     try {
       for (const id of missingIds) {
         const result = await request("/api/imports/resolve", {
@@ -429,6 +478,7 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
       notice = error instanceof HttpError && error.status === 409
         ? "The unrecorded import could not be resolved while another import is running."
         : "The unrecorded import could not be resolved. Retry status before trying again.";
+      noticeKind = "unknown";
       unavailable(error instanceof HttpError && error.status === 503);
     } finally {
       resolve.disabled = false;

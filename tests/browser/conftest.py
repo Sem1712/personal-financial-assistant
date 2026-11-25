@@ -10,9 +10,11 @@ from tests.fixtures.ui import create_export
 
 
 @pytest.fixture
-def page() -> Iterator[Page]:
+def page(pytestconfig: pytest.Config) -> Iterator[Page]:
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch()
+        browser = playwright.chromium.launch(
+            channel=pytestconfig.getoption("--browser-channel")
+        )
         try:
             yield browser.new_page()
         finally:

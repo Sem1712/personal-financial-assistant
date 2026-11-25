@@ -47,6 +47,8 @@ async def test_transaction_contracts(
         booking_status="unknown",
         reconciliation_state="unresolved",
         ongoing_expense=False,
+        operations=["private"],
+        details=["recorded detail"],
     )
     search = AsyncMock(
         return_value=TransactionPage(
@@ -77,14 +79,19 @@ async def test_transaction_contracts(
         "personal_financial_assistant.ui.transaction_routes.categories", categories
     )
     response = await client.post(
-        "/api/transactions/search", json={"text": "private", "amount_min": "-5.00"}
+        "/api/transactions/search",
+        json={"text": "private", "amount_min": "5.00", "direction": "withdrawals"},
     )
     assert response.status_code == 200
     assert response.json()["items"][0]["amount_minor"] == "-9223372036854775808"
     assert response.json()["items"][0]["id"] == "9223372036854775807"
+    assert response.json()["items"][0]["operations"] == ["private"]
+    assert response.json()["items"][0]["details"] == ["recorded detail"]
     assert "private" not in str(response.request.url)
     assert search.await_args is not None
-    assert search.await_args.args[1].amount_min == -500
+    assert search.await_args.args[1].amount_min == 500
+    assert search.await_args.args[1].direction == "withdrawals"
+    assert search.await_args.args[1].page_size == 100
     response = await client.post("/api/transactions/detail", json={"id": item.id})
     assert response.json()["observations"][0]["operation"] == "private"
     assert item.id not in str(response.request.url)
@@ -97,6 +104,8 @@ async def test_transaction_contracts(
     ("path", "body"),
     [
         ("/api/transactions/search", {"amount_min": "private invalid"}),
+        ("/api/transactions/search", {"amount_min": "-0.01"}),
+        ("/api/transactions/search", {"direction": "other"}),
         (
             "/api/transactions/search",
             {"date_from": "2025-02-01", "date_to": "2025-01-01"},

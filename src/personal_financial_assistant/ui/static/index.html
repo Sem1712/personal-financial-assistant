@@ -1,87 +1,194 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-bs-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="pfa-token" content="__PFA_TOKEN__">
   <title>Personal Financial Assistant</title>
+  <link rel="stylesheet" href="/static/bootstrap.min.css">
   <link rel="stylesheet" href="/static/styles.css">
   <script type="module" src="/static/app.js"></script>
 </head>
 <body>
-  <header>
-    <h1>Personal Financial Assistant</h1>
-    <nav aria-label="Main navigation">
-      <button type="button" data-view="chat">Chat</button>
-      <button type="button" data-view="import">Import</button>
-      <button type="button" data-view="transactions">Transactions</button>
-    </nav>
+  <a class="skip-link visually-hidden-focusable" href="#main-content">Skip to main content</a>
+  <header class="app-header">
+    <div class="container-fluid workspace-width d-flex flex-wrap align-items-center justify-content-between gap-3">
+      <div>
+        <p class="eyebrow mb-1">Your local workspace</p>
+        <h1 class="app-title mb-0">Personal Financial Assistant</h1>
+      </div>
+      <span class="local-label">Local data. Private by design.</span>
+    </div>
   </header>
-  <main>
-    <p id="navigation-status" role="status"></p>
-    <section id="chat">
-      <h2>Chat</h2>
-      <p>Chat and reports are not available yet.</p>
-      <button id="chat-import" type="button">Go to import</button>
-      <button id="chat-transactions" type="button">Go to transactions</button>
+  <div class="app-layout workspace-width">
+    <nav class="app-navigation" aria-label="Main navigation">
+      <p class="eyebrow navigation-label">Workspace</p>
+      <button class="btn navigation-button" type="button" data-view="chat" aria-current="page">Chat</button>
+      <button class="btn navigation-button" type="button" data-view="import">Import</button>
+      <button class="btn navigation-button" type="button" data-view="transactions">Transactions</button>
+      <p class="navigation-note">Explore your exports, one record at a time.</p>
+    </nav>
+  <main id="main-content" tabindex="-1">
+    <p id="navigation-status" class="status-message" role="status"></p>
+    <section id="chat" aria-labelledby="chat-heading">
+      <div class="view-intro">
+        <p class="eyebrow">A clearer view of your finances</p>
+        <h2 id="chat-heading" tabindex="-1">Chat</h2>
+      </div>
+      <div class="card workspace-card chat-card">
+        <div class="card-body">
+          <span class="availability-label">Coming later</span>
+          <h3 class="mt-4">Your assistant starts with your records.</h3>
+          <p class="text-body-secondary">Chat and reports are not available yet.</p>
+          <p>Bring in your bank exports or explore the transactions you have already imported.</p>
+          <div class="d-flex flex-wrap gap-2 mt-4">
+            <button class="btn btn-primary" id="chat-import" type="button">Go to import</button>
+            <button class="btn btn-outline-secondary" id="chat-transactions" type="button">Go to transactions</button>
+          </div>
+        </div>
+      </div>
     </section>
-    <section id="import" hidden>
-      <h2>Import</h2>
-      <p>Import supported XLSX exports from a folder on this computer.</p>
-      <form id="import-form">
-        <label for="import-folder">Local folder</label>
-        <input id="import-folder" name="input_dir" type="text" required autocomplete="off">
-        <button id="import-start" type="submit">Start import</button>
-      </form>
-      <div id="import-status" role="status" aria-live="polite"></div>
-      <ul id="import-counts" aria-label="Import counts"></ul>
-      <ul id="import-outcomes" aria-label="Recovered import outcomes"></ul>
-      <button id="import-dismiss" type="button" hidden>Dismiss recovered outcomes</button>
-      <button id="import-retry" type="button" hidden>Retry status</button>
-      <p id="import-resolve-help" hidden>Resolving prevents an unrecorded request from starting later. Its outcome remains unknown; check transactions before retrying.</p>
-      <button id="import-resolve" type="button" hidden>Resolve unrecorded import</button>
+    <section id="import" aria-labelledby="import-heading" hidden>
+      <div class="view-intro">
+        <p class="eyebrow">Bring your records together</p>
+        <h2 id="import-heading" tabindex="-1">Import</h2>
+        <p class="text-body-secondary">Import supported XLSX exports from a folder on this computer.</p>
+      </div>
+      <div class="card workspace-card mb-4">
+        <div class="card-body">
+          <form id="import-form">
+            <label class="form-label" for="import-folder">Local folder</label>
+            <p id="import-folder-help" class="text-body-secondary small">Enter the path to a local folder. All eligible exports directly inside it will be imported.</p>
+            <div class="row g-3 align-items-start">
+              <div class="col-12 col-lg">
+                <input class="form-control" id="import-folder" name="input_dir" type="text" required autocomplete="off" aria-describedby="import-folder-help import-folder-error" placeholder="e.g. /path/to/exports">
+                <p id="import-folder-error" class="field-error small mt-2" role="status"></p>
+              </div>
+              <div class="col-12 col-lg-auto">
+                <button class="btn btn-primary" id="import-start" type="submit">Start import</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </div>
+      <div id="import-status" class="status-message mb-4" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></div>
+      <ul id="import-counts" class="import-counts" aria-label="Import counts"></ul>
+      <ul id="import-outcomes" class="import-outcomes" aria-label="Recovered import outcomes"></ul>
+      <div class="d-flex flex-wrap gap-2">
+        <button class="btn btn-outline-secondary" id="import-dismiss" type="button" hidden>Dismiss recovered outcomes</button>
+        <button class="btn btn-outline-secondary" id="import-retry" type="button" hidden>Retry status</button>
+        <button class="btn btn-outline-secondary" id="import-resolve" type="button" aria-describedby="import-resolve-help" hidden>Resolve unrecorded import</button>
+      </div>
+      <p id="import-resolve-help" class="status-message mt-3" data-kind="unknown" hidden>Resolving prevents an unrecorded request from starting later. Its outcome remains unknown; check transactions before retrying.</p>
     </section>
-    <section id="transactions" hidden>
-      <h2>Transactions</h2>
-      <p>These records reflect supplied exports, not a live balance or guaranteed complete account history.</p>
-      <form id="transaction-filters" novalidate>
-        <label for="date-from">From date</label>
-        <input id="date-from" type="date">
-        <label for="date-to">To date</label>
-        <input id="date-to" type="date">
-        <label for="booking-status">Booking status</label>
-        <select id="booking-status">
-          <option value="">All statuses</option>
-          <option value="booked">Booked</option>
-          <option value="pending">Pending</option>
-          <option value="unknown">Unknown</option>
-        </select>
-        <label for="description">Description</label>
-        <input id="description" type="text" autocomplete="off">
-        <label for="category">Bank-suggested category</label>
-        <select id="category">
-          <option value="">All categories</option>
-          <option value="none">No recorded category</option>
-        </select>
-        <p id="category-status" role="status"></p>
-        <button id="category-retry" type="button" hidden>Retry categories</button>
-        <label for="amount-min">Minimum amount (EUR)</label>
-        <input id="amount-min" type="text" inputmode="decimal" autocomplete="off">
-        <label for="amount-max">Maximum amount (EUR)</label>
-        <input id="amount-max" type="text" inputmode="decimal" autocomplete="off">
-        <button type="submit">Apply filters</button>
-        <button id="clear-filters" type="button">Clear filters</button>
-      </form>
-      <p id="transaction-status" role="status" aria-live="polite"></p>
-      <button id="transaction-import" type="button" data-view="import" hidden>Import transactions</button>
-      <button id="transaction-retry" type="button" hidden>Retry transactions</button>
-      <div id="transaction-list"></div>
-      <nav aria-label="Transaction pages">
-        <button id="previous-page" type="button" hidden>Previous page</button>
-        <button id="next-page" type="button" hidden>Next page</button>
+    <section id="transactions" aria-labelledby="transactions-heading" hidden>
+      <div class="view-intro">
+        <p class="eyebrow">Explore the evidence</p>
+        <h2 id="transactions-heading" tabindex="-1">Transactions</h2>
+        <p class="text-body-secondary">These records reflect supplied exports, not a live balance or guaranteed complete account history.</p>
+      </div>
+      <details id="transaction-filter-panel" class="card workspace-card filter-accordion mb-4">
+        <summary class="filter-toggle">Filter your records</summary>
+        <div class="card-body">
+          <form id="transaction-filters" novalidate>
+            <div class="row g-3">
+              <div class="col-12 col-md-4">
+                <label class="form-label" for="date-from">From date</label>
+                <input class="form-control" id="date-from" type="date">
+              </div>
+              <div class="col-12 col-md-4">
+                <label class="form-label" for="date-to">To date</label>
+                <input class="form-control" id="date-to" type="date">
+              </div>
+              <div class="col-12 col-md-4">
+                <label class="form-label" for="booking-status">Booking status</label>
+                <select class="form-select" id="booking-status">
+                  <option value="">All statuses</option>
+                  <option value="booked">Booked</option>
+                  <option value="pending">Pending</option>
+                  <option value="unknown">Unknown</option>
+                </select>
+              </div>
+            </div>
+            <div class="row g-3 mt-0 align-items-end">
+              <div class="col-12 col-md-4">
+                <label class="form-label" for="transaction-direction">Transaction type</label>
+                <select class="form-select" id="transaction-direction">
+                  <option value="">All</option>
+                  <option value="withdrawals">Withdrawals</option>
+                  <option value="deposits">Deposits</option>
+                </select>
+              </div>
+              <div class="col-12 col-md-4">
+                <label class="form-label" for="amount-min">Minimum absolute amount (EUR)</label>
+                <input class="form-control" id="amount-min" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 0.00" aria-describedby="amount-help">
+              </div>
+              <div class="col-12 col-md-4">
+                <label class="form-label" for="amount-max">Maximum absolute amount (EUR)</label>
+                <input class="form-control" id="amount-max" type="text" inputmode="decimal" autocomplete="off" placeholder="e.g. 100.00" aria-describedby="amount-help">
+              </div>
+            </div>
+            <div class="row g-3 mt-0">
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="description">Description</label>
+                <input class="form-control" id="description" type="text" autocomplete="off" placeholder="Search source text">
+              </div>
+              <div class="col-12 col-md-6">
+                <label class="form-label" for="category">Bank-suggested category</label>
+                <select class="form-select" id="category">
+                  <option value="">All categories</option>
+                  <option value="none">No recorded category</option>
+                </select>
+                <p id="category-status" class="small mt-2" role="status" tabindex="-1"></p>
+                <button class="btn btn-outline-secondary" id="category-retry" type="button" hidden>Retry categories</button>
+              </div>
+            </div>
+            <p id="amount-help" class="small text-body-secondary mt-3">Amounts start at zero and ignore the sign. Use Transaction type to choose withdrawals or deposits.</p>
+            <p id="filter-error" class="field-error mt-3" role="status"></p>
+            <div class="d-flex flex-wrap gap-2 mt-3">
+              <button class="btn btn-primary" type="submit">Apply filters</button>
+              <button class="btn btn-outline-secondary" id="clear-filters" type="button">Clear filters</button>
+            </div>
+          </form>
+        </div>
+      </details>
+      <p id="filters-summary" class="filter-summary">All recorded transactions</p>
+      <p id="transaction-status" class="status-message" role="status" aria-live="polite" tabindex="-1"></p>
+      <div class="d-flex flex-wrap gap-2 mb-3">
+        <button class="btn btn-primary" id="transaction-import" type="button" data-view="import" hidden>Import transactions</button>
+        <button class="btn btn-outline-secondary" id="transaction-retry" type="button" hidden>Retry transactions</button>
+      </div>
+      <nav id="transaction-pages-top" class="transaction-pagination" aria-label="Transaction pages, top">
+        <ul class="pagination mb-0">
+          <li class="page-item pagination-first disabled"><button class="page-link" type="button" data-page-action="first" aria-label="First page" disabled>First</button></li>
+          <li class="page-item disabled"><button class="page-link" type="button" data-page-action="previous" aria-label="Previous page" disabled>Previous</button></li>
+          <li class="page-item disabled"><button class="page-link" type="button" data-page-action="next" aria-label="Next page" disabled>Next</button></li>
+        </ul>
       </nav>
-      <div id="transaction-details" aria-live="polite"></div>
+      <div id="transaction-list" class="transaction-list"></div>
+      <nav class="transaction-pagination" aria-label="Transaction pages, bottom">
+        <ul class="pagination mb-0">
+          <li class="page-item pagination-first disabled"><button class="page-link" id="first-page" type="button" data-page-action="first" aria-label="First page" disabled>First</button></li>
+          <li class="page-item disabled"><button class="page-link" id="previous-page" type="button" data-page-action="previous" aria-label="Previous page" disabled>Previous</button></li>
+          <li class="page-item disabled"><button class="page-link" id="next-page" type="button" data-page-action="next" aria-label="Next page" disabled>Next</button></li>
+        </ul>
+      </nav>
+      <section id="transaction-details" class="transaction-details" aria-labelledby="detail-heading" hidden>
+        <div>
+          <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+            <div>
+              <h3 id="detail-heading" class="h5" tabindex="-1">Transaction details</h3>
+              <p id="detail-context" class="text-body-secondary small"></p>
+              <p id="detail-record-status" class="text-body-secondary small"></p>
+            </div>
+          </div>
+          <p id="detail-status" class="status-message" role="status"></p>
+          <button class="btn btn-outline-secondary mb-3" id="detail-retry" type="button" hidden>Retry details</button>
+          <div id="detail-observations"></div>
+        </div>
+      </section>
     </section>
   </main>
+  </div>
 </body>
 </html>
