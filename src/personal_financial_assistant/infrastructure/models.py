@@ -1,6 +1,7 @@
 """Persistence schema for bank-export provenance and occurrences."""
 
 from datetime import date, datetime
+from decimal import Decimal
 from uuid import UUID, uuid4
 
 from sqlalchemy import (
@@ -12,6 +13,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    Numeric,
     String,
     Table,
     Text,
@@ -187,6 +189,58 @@ class TransactionOccurrence(Base):
             and self.reconciliation_state != "unresolved"
             and self.amount_minor < 0
         )
+
+
+class TransactionClassification(Base):
+    """Current classification and its provenance for one occurrence dimension."""
+
+    __tablename__ = "transaction_classification"
+    __table_args__ = (
+        CheckConstraint(
+            "dimension IN ('transaction_type', 'category', 'budget_treatment')",
+            name="ck_classification_dimension",
+        ),
+        # Match Python str.strip() and the detail view's Unicode whitespace set.
+        CheckConstraint(
+            "(dimension = 'transaction_type' AND value IN ('expense', 'income', 'transfer', 'refund')) OR "
+            "(dimension = 'budget_treatment' AND value IN ('ordinary', 'extraordinary', 'excluded')) OR "
+            r"(dimension = 'category' AND value ~ U&'[^\0009-\000D\001C-\0020\0085\00A0\1680\2000-\200A\2028\2029\202F\205F\3000]')",
+            name="ck_classification_value",
+        ),
+        CheckConstraint(
+            "status IN ('provisional', 'confirmed')", name="ck_classification_status"
+        ),
+        CheckConstraint(
+            "source IN ('ai', 'rule', 'user')", name="ck_classification_source"
+        ),
+        CheckConstraint(
+            "confidence IS NULL OR (confidence >= 0 AND confidence <= 100 "
+            "AND scale(confidence) <= 2)",
+            name="ck_classification_confidence",
+        ),
+    )
+
+    occurrence_id: Mapped[int] = mapped_column(
+        ForeignKey("transaction_occurrence.id", ondelete="RESTRICT"), primary_key=True
+    )
+    dimension: Mapped[str] = mapped_column(String(16), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String(11), nullable=False)
+    source: Mapped[str] = mapped_column(String(4), nullable=False)
+    confidence: Mapped[Decimal | None] = mapped_column(Numeric)
+
+
+class TransactionContext(Base):
+    """Optional user and AI context associated with one occurrence."""
+
+    __tablename__ = "transaction_context"
+
+    occurrence_id: Mapped[int] = mapped_column(
+        ForeignKey("transaction_occurrence.id", ondelete="RESTRICT"), primary_key=True
+    )
+    user_annotation: Mapped[str | None] = mapped_column(Text)
+    user_explanation: Mapped[str | None] = mapped_column(Text)
+    ai_explanation: Mapped[str | None] = mapped_column(Text)
 
 
 occurrence_observation = Table(

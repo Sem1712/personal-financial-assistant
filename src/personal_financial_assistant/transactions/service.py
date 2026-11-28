@@ -9,9 +9,15 @@ from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from personal_financial_assistant.infrastructure.models import (
+    TransactionClassification,
+    TransactionContext,
     TransactionObservation,
     TransactionOccurrence,
     occurrence_observation,
+)
+from personal_financial_assistant.transactions.enrichment import (
+    EnrichmentResult,
+    build_result,
 )
 from personal_financial_assistant.transactions.filters import (
     CategoryValue,
@@ -41,6 +47,7 @@ class Observation(BaseModel):
 
 class TransactionDetail(TransactionItem):
     observations: list[Observation]
+    enrichment: EnrichmentResult
 
 
 class TransactionPage(BaseModel):
@@ -198,7 +205,12 @@ async def search(engine: AsyncEngine, filters: TransactionFilters) -> Transactio
 async def detail(engine: AsyncEngine, occurrence_id: int) -> TransactionDetail | None:
     """Return the occurrence and only its explicitly linked source observations."""
     statement = (
-        select(TransactionOccurrence, TransactionObservation)
+        select(
+            TransactionOccurrence,
+            TransactionObservation,
+            TransactionClassification,
+            TransactionContext,
+        )
         .select_from(TransactionOccurrence)
         .outerjoin(
             occurrence_observation,
@@ -208,6 +220,14 @@ async def detail(engine: AsyncEngine, occurrence_id: int) -> TransactionDetail |
             TransactionObservation,
             occurrence_observation.c.observation_id == TransactionObservation.id,
         )
+        .outerjoin(
+            TransactionClassification,
+            TransactionClassification.occurrence_id == TransactionOccurrence.id,
+        )
+        .outerjoin(
+            TransactionContext,
+            TransactionContext.occurrence_id == TransactionOccurrence.id,
+        )
         .where(TransactionOccurrence.id == occurrence_id)
         .order_by(TransactionObservation.id)
     )
@@ -216,7 +236,7 @@ async def detail(engine: AsyncEngine, occurrence_id: int) -> TransactionDetail |
     if not rows:
         return None
     possible_observations = (
-        cast(TransactionObservation | None, observation) for _, observation in rows
+        cast(TransactionObservation | None, row[1]) for row in rows
     )
     observations = [
         Observation(
@@ -225,9 +245,18 @@ async def detail(engine: AsyncEngine, occurrence_id: int) -> TransactionDetail |
             category=observation.category,
             booking_status=observation.booking_status,
         )
-        for observation in possible_observations
-        if observation is not None
+        for observation in {
+            observation.id: observation
+            for observation in possible_observations
+            if observation is not None
+        }.values()
     ]
+    classifications = {
+        classification.dimension: classification
+        for row in rows
+        if (classification := cast(TransactionClassification | None, row[2]))
+        is not None
+    }
     return TransactionDetail(
         **_item(
             rows[0][0],
@@ -247,6 +276,9 @@ async def detail(engine: AsyncEngine, occurrence_id: int) -> TransactionDetail |
             ),
         ).model_dump(),
         observations=observations,
+        enrichment=build_result(
+            list(classifications.values()), cast(TransactionContext | None, rows[0][3])
+        ),
     )
 
 

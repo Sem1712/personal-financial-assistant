@@ -1,7 +1,12 @@
 import asyncio
+import os
+import signal
 import socket
+import subprocess
+import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -14,12 +19,133 @@ from playwright.sync_api import (
     expect,
     sync_playwright,
 )
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import create_async_engine
 
+from personal_financial_assistant.infrastructure.models import TransactionOccurrence
 from personal_financial_assistant.ingestion.worker_client import WorkbookWorker
 from personal_financial_assistant.ingestion.xlsx_reader import FileSnapshot
+from personal_financial_assistant.transactions import (
+    EnrichmentUpdate,
+    update_enrichment,
+)
 from personal_financial_assistant.ui.app import create_app
 from tests.fixtures.intesa_xlsx import HEADINGS, workbook
 from tests.fixtures.ui import create_export
+
+
+def test_synthetic_enrichment_demo_is_isolated(pytestconfig: pytest.Config) -> None:
+    listener = socket.socket()
+    try:
+        listener.bind(("127.0.0.1", 8765))
+    except OSError:
+        pytest.skip("Local UI port 8765 is already in use.")
+    finally:
+        listener.close()
+
+    env = os.environ.copy()
+    env["PFA_DATABASE_URL"] = "postgresql+asyncpg://invalid:invalid@127.0.0.1:1/not_app"
+    process = subprocess.Popen(
+        [sys.executable, "-m", "tests.fixtures.enrichment_demo"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        deadline = time.monotonic() + 45
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                output, _ = process.communicate()
+                pytest.fail(f"Synthetic demo exited before startup: {output}")
+            try:
+                with socket.create_connection(("127.0.0.1", 8765), timeout=0.1):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            pytest.fail("Synthetic demo did not start in time")
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.launch(
+                channel=pytestconfig.getoption("--browser-channel")
+            )
+            try:
+                context = browser.new_context()
+                external: list[str] = []
+
+                def local_only(route: Route) -> None:
+                    if route.request.url.startswith("http://127.0.0.1:8765/"):
+                        route.continue_()
+                    else:
+                        external.append(route.request.url)
+                        route.abort()
+
+                context.route("**/*", local_only)
+                page = context.new_page()
+                page.goto("http://127.0.0.1:8765/")
+                expect(page.locator("#navigation-status")).to_have_text("")
+                page.get_by_role("button", name="Transactions", exact=True).click()
+                page.get_by_role("button", name="Details", exact=True).first.click()
+                expect(
+                    page.get_by_text("Category: groceries", exact=True)
+                ).to_be_visible()
+                expect(
+                    page.get_by_text("Bank suggestion: Bank suggestion", exact=True)
+                ).to_be_visible()
+                expect(
+                    page.get_by_text(
+                        "User explanation: Synthetic user explanation", exact=True
+                    )
+                ).to_be_visible()
+                expect(
+                    page.get_by_text(
+                        "AI explanation: Synthetic AI interpretation", exact=True
+                    )
+                ).to_be_visible()
+                page.get_by_role("button", name="Details", exact=True).nth(1).click()
+                expect(
+                    page.get_by_text("Category: Unclassified", exact=True)
+                ).to_be_visible()
+                expect(
+                    page.get_by_text("User annotation: Absent", exact=True)
+                ).to_be_visible()
+                assert (
+                    page.locator(
+                        "#transaction-details input, #transaction-details textarea"
+                    ).count()
+                    == 0
+                )
+                assert not external
+            finally:
+                browser.close()
+    finally:
+        if process.poll() is None:
+            process.send_signal(signal.SIGINT)
+        try:
+            output, _ = process.communicate(timeout=20)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            pytest.fail("Synthetic demo did not shut down")
+        assert process.returncode == 0, output
+
+
+def test_synthetic_demo_rejects_occupied_port() -> None:
+    with socket.socket() as listener:
+        try:
+            listener.bind(("127.0.0.1", 8765))
+        except OSError:
+            pytest.skip("Local UI port 8765 is already in use.")
+        listener.listen()
+        result = subprocess.run(
+            [sys.executable, "-m", "tests.fixtures.enrichment_demo"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        assert result.returncode != 0
+        assert "Address already in use" in result.stderr
 
 
 def test_real_browser_import_and_transaction_refresh(
@@ -29,7 +155,6 @@ def test_real_browser_import_and_transaction_refresh(
     monkeypatch: pytest.MonkeyPatch,
     pytestconfig: pytest.Config,
 ) -> None:
-    del migrated_url
     exports = tmp_path / "exports"
     exports.mkdir()
     create_export(exports)
@@ -224,6 +349,37 @@ def test_real_browser_import_and_transaction_refresh(
                 expect(other.get_by_text("-12.34 EUR", exact=True)).to_be_visible()
                 page.get_by_role("button", name="Transactions", exact=True).click()
                 expect(page.get_by_text("-12.34 EUR", exact=True)).to_be_visible()
+
+                async def classify_unicode_category() -> None:
+                    engine = create_async_engine(migrated_url)
+                    try:
+                        async with engine.connect() as conn:
+                            occurrence_id = await conn.scalar(
+                                select(TransactionOccurrence.id).where(
+                                    TransactionOccurrence.amount_minor == -1234
+                                )
+                            )
+                        assert occurrence_id is not None
+                        await update_enrichment(
+                            engine,
+                            occurrence_id,
+                            EnrichmentUpdate.model_validate(
+                                {
+                                    "category": {
+                                        "value": "\ufeff",
+                                        "status": "confirmed",
+                                        "source": "user",
+                                    }
+                                }
+                            ),
+                        )
+                    finally:
+                        await engine.dispose()
+
+                with ThreadPoolExecutor(max_workers=1) as executor:
+                    executor.submit(
+                        lambda: asyncio.run(classify_unicode_category())
+                    ).result()
                 detail_button = (
                     page.locator(".transaction-row")
                     .filter(has=page.get_by_text("-12.34 EUR", exact=True))
@@ -235,6 +391,11 @@ def test_real_browser_import_and_transaction_refresh(
                     page.get_by_text("Operation: Synthetic purchase", exact=True)
                 ).to_be_visible()
                 expect(page.get_by_text("Bank suggestion: Food")).to_be_visible()
+                page.wait_for_function(
+                    """value => [...document.querySelectorAll('#detail-observations p')]
+                        .some(element => element.textContent === value)""",
+                    arg="Category: \ufeff",
+                )
                 detail_button.click()
                 expect(detail_button).to_be_focused()
                 expect(page.locator(".transaction-row")).to_have_count(100)

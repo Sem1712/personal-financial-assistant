@@ -9,6 +9,7 @@ import pytest_asyncio
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from personal_financial_assistant.transactions import EnrichmentResult
 from personal_financial_assistant.transactions.service import (
     Observation,
     TransactionDetail,
@@ -58,6 +59,7 @@ async def test_transaction_contracts(
     detail = AsyncMock(
         return_value=TransactionDetail(
             **item.model_dump(),
+            enrichment=EnrichmentResult(),
             observations=[
                 Observation(
                     operation="private",
@@ -87,6 +89,7 @@ async def test_transaction_contracts(
     assert response.json()["items"][0]["id"] == "9223372036854775807"
     assert response.json()["items"][0]["operations"] == ["private"]
     assert response.json()["items"][0]["details"] == ["recorded detail"]
+    assert "enrichment" not in response.json()["items"][0]
     assert "private" not in str(response.request.url)
     assert search.await_args is not None
     assert search.await_args.args[1].amount_min == 500
@@ -94,6 +97,12 @@ async def test_transaction_contracts(
     assert search.await_args.args[1].page_size == 100
     response = await client.post("/api/transactions/detail", json={"id": item.id})
     assert response.json()["observations"][0]["operation"] == "private"
+    assert response.json()["enrichment"]["category"] == {
+        "value": None,
+        "status": "unclassified",
+        "source": None,
+        "confidence": None,
+    }
     assert item.id not in str(response.request.url)
     response = await client.post("/api/transactions/categories", json={})
     assert response.json() == {"categories": ["Bank suggestion"]}

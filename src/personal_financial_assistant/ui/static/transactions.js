@@ -18,6 +18,32 @@ function parseAmount(value) {
   return cents;
 }
 
+function validEnrichment(enrichment) {
+  if (!enrichment || typeof enrichment !== "object") return false;
+  for (const key of ["transaction_type", "category", "budget_treatment"]) {
+    const item = enrichment[key];
+    if (!item || typeof item !== "object") return false;
+    if (item.status === "unclassified") {
+      if (item.value !== null || item.source !== null || item.confidence !== null) return false;
+    } else {
+      // Match Python str.strip() and the PostgreSQL category constraint.
+      if (!["provisional", "confirmed"].includes(item.status) ||
+          !["ai", "rule", "user"].includes(item.source) ||
+          typeof item.value !== "string" ||
+          /[\u0000\uD800-\uDFFF]/u.test(item.value) ||
+          /^[\u0009-\u000D\u001C-\u0020\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/.test(item.value)) return false;
+      if (key === "transaction_type" && !["expense", "income", "transfer", "refund"].includes(item.value)) return false;
+      if (key === "budget_treatment" && !["ordinary", "extraordinary", "excluded"].includes(item.value)) return false;
+      if (item.confidence !== null && (typeof item.confidence !== "string" ||
+          !/^(?:0|[1-9][0-9]{0,2})(?:\.[0-9]{1,2})?$/.test(item.confidence) ||
+          Number(item.confidence) > 100)) return false;
+    }
+  }
+  return ["user_annotation", "user_explanation", "ai_explanation"].every(
+    (key) => enrichment[key] === null || typeof enrichment[key] === "string",
+  );
+}
+
 class FilterValidationError extends Error {
   constructor(message, fields) {
     super(message);
@@ -228,8 +254,27 @@ export function createTransactionView({ request }) {
     try {
       const data = await post("/api/transactions/detail", { id: item.id });
       if (sequence !== detailGeneration) return;
-      if (data.id !== item.id || !Array.isArray(data.observations)) throw new Error("Invalid transaction details response");
+      if (data.id !== item.id || !Array.isArray(data.observations) || !validEnrichment(data.enrichment)) {
+        throw new Error("Invalid transaction details response");
+      }
       setStatus(detailStatus, "", "ready");
+      addText(observations, "h4", "Classification").className = "h6";
+      for (const [key, label] of [["transaction_type", "Transaction type"], ["category", "Category"], ["budget_treatment", "Budget treatment"]]) {
+        const dimension = data.enrichment[key];
+        const section = document.createElement("div");
+        addText(section, "p", `${label}: ${dimension.value ?? "Unclassified"}`);
+        addText(section, "p", `Status: ${dimension.status}`);
+        addText(section, "p", `Source: ${dimension.source ?? "Unavailable"}`);
+        addText(section, "p", `Confidence: ${dimension.confidence === null ? "Unavailable" : `${dimension.confidence}%`}`);
+        if (key === "budget_treatment" && dimension.value === "excluded") {
+          addText(section, "p", "Excluded is intended for future budget exclusion; no budget has been calculated.");
+        }
+        observations.append(section);
+      }
+      addText(observations, "h4", "Context").className = "h6";
+      for (const [key, label] of [["user_annotation", "User annotation"], ["user_explanation", "User explanation"], ["ai_explanation", "AI explanation"]]) {
+        addText(observations, "p", `${label}: ${data.enrichment[key] ?? "Absent"}`);
+      }
       addText(observations, "h4", "Source observations").className = "h6";
       if (!data.observations.length) addText(observations, "p", "No linked source observations are available.");
       for (const observation of data.observations) {

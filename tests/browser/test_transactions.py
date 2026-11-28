@@ -25,6 +25,29 @@ class TransactionApp:
         self.details = ["Synthetic recorded details"]
         self.detail_ids: list[str] = []
         self.run: dict[str, object] | None = None
+        self.enrichment: dict[str, object] = {
+            "transaction_type": {
+                "value": "expense",
+                "status": "confirmed",
+                "source": "user",
+                "confidence": None,
+            },
+            "category": {
+                "value": "<b>Groceries</b>",
+                "status": "provisional",
+                "source": "ai",
+                "confidence": "72.5",
+            },
+            "budget_treatment": {
+                "value": "excluded",
+                "status": "confirmed",
+                "source": "rule",
+                "confidence": None,
+            },
+            "user_annotation": None,
+            "user_explanation": None,
+            "ai_explanation": None,
+        }
 
     def serve(self, route: Route) -> None:
         request = route.request
@@ -106,6 +129,7 @@ class TransactionApp:
                     "booking_status": "unknown",
                     "reconciliation_state": "unresolved",
                     "ongoing_expense": False,
+                    "enrichment": self.enrichment,
                     "observations": [
                         {
                             "operation": "<img src=x onerror=alert(1)>",
@@ -143,6 +167,7 @@ def test_filters_paging_details_and_exact_amount(
     expect(
         page.get_by_text("Booking status: unknown; reconciliation: unresolved")
     ).to_be_hidden()
+    expect(page.get_by_text("Category: <b>Groceries</b>", exact=True)).to_have_count(0)
     page.get_by_role("button", name="Details", exact=True).click()
     expect(
         page.get_by_text("Booking status: unknown; reconciliation: unresolved")
@@ -153,6 +178,20 @@ def test_filters_paging_details_and_exact_amount(
     expect(
         page.get_by_text("Bank suggestion: <b>Travel</b>", exact=True)
     ).to_be_visible()
+    expect(page.get_by_text("Category: <b>Groceries</b>", exact=True)).to_be_visible()
+    expect(page.get_by_text("Transaction type: expense", exact=True)).to_be_visible()
+    expect(page.get_by_text("Budget treatment: excluded", exact=True)).to_be_visible()
+    expect(page.get_by_text("Source: ai", exact=True)).to_be_visible()
+    expect(page.get_by_text("Confidence: 72.5%", exact=True)).to_be_visible()
+    expect(
+        page.get_by_text("Confidence: Unavailable", exact=True).first
+    ).to_be_visible()
+    assert (
+        page.locator(
+            "#transaction-details input, #transaction-details textarea"
+        ).count()
+        == 0
+    )
     assert page.locator("#transaction-details img").count() == 0
     page.get_by_role("button", name="Next page").first.click()
     assert transactions_app.searches[-1]["cursor"] == "next"
@@ -631,6 +670,7 @@ def test_details_expand_beneath_selected_row_and_toggle(
     expect(panel).to_be_visible()
     page.get_by_role("button", name="Next page").first.click()
     expect(page.locator("#transaction-details")).to_be_hidden()
+    expect(rows).to_have_count(1)
     page.get_by_role("button", name="Details", exact=True).click()
     expect(page.locator(".transaction-row #transaction-details")).to_be_visible()
     expect(page.locator("#detail-context")).to_contain_text("Record 2")

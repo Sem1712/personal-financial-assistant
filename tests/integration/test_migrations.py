@@ -30,7 +30,7 @@ def test_upgrade_preserves_existing_schema(
     command.upgrade(Config("alembic.ini"), "head")
     assert (
         asyncio.run(execute(postgres_url, "SELECT version_num FROM alembic_version"))
-        == "0004_ui_import_run"
+        == "0006_category_whitespace"
     )
     if existing:
         assert (
@@ -137,7 +137,7 @@ def test_ui_import_run_migration(
     command.upgrade(config, "head")
     assert (
         asyncio.run(execute(postgres_url, "SELECT version_num FROM alembic_version"))
-        == "0004_ui_import_run"
+        == "0006_category_whitespace"
     )
     assert (
         asyncio.run(
@@ -216,3 +216,135 @@ def test_ui_import_run_migration(
             )
             == -500
         )
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_transaction_enrichment_migration(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    monkeypatch.setenv("PFA_DATABASE_URL", postgres_url)
+    config = Config("alembic.ini")
+    if existing:
+        command.upgrade(config, "0004_ui_import_run")
+        for statement in (
+            "INSERT INTO selected_account (id, account_reference) VALUES (1, 'synthetic')",
+            (
+                "INSERT INTO transaction_occurrence "
+                "(id, account_id, transaction_date, amount_minor, currency, booking_status, reconciliation_state) "
+                "VALUES (1, 1, '2022-01-01', -500, 'EUR', 'booked', 'confirmed')"
+            ),
+            "INSERT INTO source_file (sha256, transaction_row_count, account_id) VALUES (repeat('a',64), 1, 1)",
+            (
+                "INSERT INTO transaction_observation "
+                "(id, source_file_sha256, sheet_index, row_number, account_id, transaction_date, amount_minor, currency, booking_status, category, candidate_key, occurrence_ordinal) "
+                "VALUES (1, repeat('a',64), 0, 1, 1, '2022-01-01', -500, 'EUR', 'booked', 'bank suggestion', repeat('b',64), 1)"
+            ),
+            "INSERT INTO occurrence_observation VALUES (1, 1)",
+        ):
+            asyncio.run(execute(postgres_url, statement))
+    command.upgrade(config, "head")
+    assert (
+        asyncio.run(
+            execute(postgres_url, "SELECT count(*) FROM transaction_classification")
+        )
+        == 0
+    )
+    assert (
+        asyncio.run(execute(postgres_url, "SELECT count(*) FROM transaction_context"))
+        == 0
+    )
+    if existing:
+        assert (
+            asyncio.run(
+                execute(
+                    postgres_url,
+                    "SELECT category FROM transaction_observation WHERE id = 1",
+                )
+            )
+            == "bank suggestion"
+        )
+        assert (
+            asyncio.run(
+                execute(postgres_url, "SELECT count(*) FROM occurrence_observation")
+            )
+            == 1
+        )
+        asyncio.run(
+            execute(
+                postgres_url,
+                "INSERT INTO transaction_classification (occurrence_id, dimension, value, status, source) VALUES (1, 'category', 'groceries', 'confirmed', 'user')",
+            )
+        )
+        with pytest.raises(IntegrityError):
+            asyncio.run(
+                execute(postgres_url, "DELETE FROM transaction_occurrence WHERE id = 1")
+            )
+        with pytest.raises(RuntimeError, match="enrichment"):
+            command.downgrade(config, "0004_ui_import_run")
+        asyncio.run(execute(postgres_url, "DELETE FROM transaction_classification"))
+        asyncio.run(
+            execute(
+                postgres_url,
+                "INSERT INTO transaction_context (occurrence_id, user_annotation) VALUES (1, 'note')",
+            )
+        )
+        with pytest.raises(RuntimeError, match="enrichment"):
+            command.downgrade(config, "0004_ui_import_run")
+    else:
+        command.downgrade(config, "0004_ui_import_run")
+
+
+def test_category_whitespace_migration_preserves_existing_enrichment(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PFA_DATABASE_URL", postgres_url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "0005_transaction_enrichment")
+    statements = (
+        "INSERT INTO selected_account (id, account_reference) VALUES (1, 'synthetic')",
+        "INSERT INTO transaction_occurrence (id, account_id, transaction_date, amount_minor, currency, booking_status, reconciliation_state) VALUES (1, 1, '2025-01-01', -100, 'EUR', 'booked', 'confirmed'), (2, 1, '2025-01-01', -100, 'EUR', 'booked', 'confirmed')",
+        "INSERT INTO transaction_classification (occurrence_id, dimension, value, status, source) VALUES (1, 'category', U&'\\FEFF', 'confirmed', 'user'), (2, 'category', U&'\\00A0', 'confirmed', 'user')",
+    )
+    for statement in statements:
+        asyncio.run(execute(postgres_url, statement))
+    with pytest.raises(RuntimeError, match="whitespace-only"):
+        command.upgrade(config, "head")
+    assert (
+        asyncio.run(
+            execute(postgres_url, "SELECT count(*) FROM transaction_classification")
+        )
+        == 2
+    )
+    assert (
+        asyncio.run(execute(postgres_url, "SELECT version_num FROM alembic_version"))
+        == "0005_transaction_enrichment"
+    )
+    asyncio.run(
+        execute(
+            postgres_url,
+            "UPDATE transaction_classification SET value = 'food' WHERE occurrence_id = 2",
+        )
+    )
+    command.upgrade(config, "head")
+    assert (
+        asyncio.run(
+            execute(
+                postgres_url,
+                "SELECT value = U&'\\FEFF' FROM transaction_classification WHERE occurrence_id = 1",
+            )
+        )
+        is True
+    )
+    assert (
+        asyncio.run(
+            execute(postgres_url, "SELECT count(*) FROM transaction_classification")
+        )
+        == 2
+    )
+    command.downgrade(config, "0005_transaction_enrichment")
+    asyncio.run(
+        execute(
+            postgres_url,
+            "UPDATE transaction_classification SET value = U&'\\00A0' WHERE occurrence_id = 2",
+        )
+    )

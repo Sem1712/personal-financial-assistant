@@ -58,6 +58,50 @@ occurrences. Transaction details show linked source observations and bank-sugges
 categories; conflicting or missing evidence is not resolved by the UI. Export data
 does not represent a live balance or guarantee complete history.
 
+Details also show independent transaction type, category, and budget treatment, each
+with its status, source, and optional confidence. Bank-suggested categories remain
+separate original evidence. User annotations and user/AI explanations appear separately;
+missing information is explicit. Excluded treatment indicates intended future budget
+exclusion, not a calculated budget. These fields are read-only in the UI: no classifier,
+editing interface, or budget calculation is provided.
+
+Other local Python components can use the async `transactions.update_enrichment` boundary
+with an `EnrichmentUpdate` patch. Omitted fields are unchanged and null clears a field;
+each supplied classification replaces its complete value and provenance. AI and rule
+updates may replace even confirmed user classifications. Confidence is an exact decimal
+string from 0 to 100 with at most two decimal places. Updates are atomic and preserve
+imported observations. If `EnrichmentCommitUnknown` is raised, read the current detail
+before retrying. Notes and financial data stay local and must not be logged.
+Enrichment validation errors include a safe reason without input values.
+Category and context text cannot contain NUL or unpaired Unicode surrogates, which
+PostgreSQL cannot store.
+
+The category-whitespace migration refuses to upgrade if legacy storage contains a
+whitespace-only classification. Correct or clear those classifications locally and retry;
+the migration does not silently alter them.
+
+For example, with an existing async engine and occurrence ID:
+
+```python
+from personal_financial_assistant.transactions import (
+    EnrichmentUpdate,
+    update_enrichment,
+)
+
+patch = EnrichmentUpdate.model_validate(
+    {
+        "category": {
+            "value": "groceries",
+            "status": "provisional",
+            "source": "ai",
+            "confidence": "72.5",
+        },
+        "user_annotation": "Weekly shopping",
+    }
+)
+result = await update_enrichment(engine, occurrence_id, patch)
+```
+
 The responsive interface uses locally bundled Bootstrap CSS and a custom dark theme,
 including native form controls, muted hints, and readable status colors.
 Filters sit in a keyboard-operable accordion, collapsed by default. Toggling it
