@@ -238,7 +238,7 @@ async def test_ingestion_and_enrichment_serialize_without_losing_data(
                         count = await conn.scalar(
                             text(
                                 "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-                                "AND wait_event_type = 'Lock' AND query LIKE 'UPDATE transaction_occurrence%'"
+                                "AND wait_event_type = 'Lock' AND query LIKE 'SELECT transaction_occurrence.%FOR UPDATE%'"
                             )
                         )
                     if count:

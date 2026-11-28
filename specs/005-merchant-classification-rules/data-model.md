@@ -1,0 +1,66 @@
+# Data Model: Merchant Identification and Classification Rules
+
+The tables below describe logical records; names may follow existing migration conventions. All IDs are stable local identifiers. User input and source observations are local, validated for nonempty content where required, and rejected if they contain NUL or unpaired surrogates. No financial amounts or source observations are modified.
+
+## Merchant and reusable rules
+
+| Entity | Fields and relationships | Validation and lifecycle |
+|--------|--------------------------|--------------------------|
+| Merchant | ID, canonical name, enabled state, revision | Nonempty name; create/edit/disable, no deletion. Disabling suppresses associated matches, preferences and default, but preserves records. |
+| Matching entry | ID, merchant ID, kind (`alias`, `substring`), original text, normalized text, origin (`user`, `ai`, `service`), confirmed, enabled, revision | FK to merchant; nonempty normalized text. Exact duplicate entries for the same merchant/kind/normalized text are rejected. Different merchants may have matching text and cause an explicit conflict. Confirmed is set only by an explicit user action; origin is preserved on confirmation. |
+| Merchant default | ID, merchant ID, category, origin, confirmed, enabled, revision | At most one current default per merchant, including disabled defaults; replace or re-enable by editing that record. Category is nonempty; use existing category validation. |
+| Classification preference | ID, match kind (`merchant`, `exact_description`, `substring_description`), merchant ID or match text, category, origin, confirmed, enabled, revision | Exactly the relevant match operand is required. Normalize description text as for matching entries. Reject empty categories/text. Different preferences may overlap; ties are handled by evaluation, not uniqueness constraints. |
+
+Normalization is Unicode case-folding plus trimming and collapsing whitespace; all other characters are preserved. Apply it separately to every nonempty linked observation's operation and details. Match only each entire normalized field for aliases/exact descriptions, or literal contained text for substring patterns. Never concatenate fields or use bank category as classification. No linked text gives no merchant match.
+
+`origin=service` identifies proposals produced without AI and does not mean user-confirmed; AI-specific protections apply to `origin=ai`. The trusted host tracks generation provenance across service calls and transformations: model-derived content retains AI origin even when a classification service forwards or transforms it. Origin is derived from trusted provenance, not the immediate caller or a model-supplied field. Reject proposals with unknown provenance. Creation by a user-directed action does not itself imply confirmation unless the action explicitly confirms it.
+
+## Transaction override
+
+At most one override per occurrence: occurrence ID, nonempty category and revision. A user-directed set/change atomically stores the override and sets the category classification to that value with `source=user`, `status=confirmed`, `confidence=null`; it leaves other dimensions and notes intact. Clearing removes only the override; it does not immediately clear or reclassify the current category. Subsequent evaluation applies current rules. Overrides are not inferred from ordinary user-sourced classifications.
+
+Rule evaluation never replaces an active override. The pre-existing generic enrichment operation still retains its documented replacement policy and does not create, change or clear an override. The override remains authoritative when rules are next evaluated; callers that want to change the override must use the dedicated operation.
+
+## Suggestions, conflicts and approvals
+
+| Entity | Fields and relationships | Validation and lifecycle |
+|--------|--------------------------|--------------------------|
+| Change suggestion | ID, target type/ID, target revision, proposed action and validated payload, origin `ai`, state (`pending`, `approved`, `rejected`, `stale`), review snapshot | A proposed AI edit/disable of a confirmed entry or its merchant remains pending. User review identifies the complete proposed effect, including affected confirmed entries, before explicit approval. Approval applies the proposal atomically only if the review snapshot and affected revisions remain current; otherwise mark stale and require a new review. Rejection changes no target. |
+| Application conflict | ID, occurrence ID, AI entry kind/ID/revision, confirmed entry kind/ID/revision, evidence revision, outcome kind (`merchant`, `category`), state (`pending`, `approved`, `rejected`, `stale`), review snapshot | Created or refreshed when both entries match the actual occurrence but propose different merchant/category outcomes. Multiple confirmed conflicts require separate approvals. Rejected conflicts continue to block that application; repeat evaluations must not silently reactivate it. |
+| Application approval | Conflict ID and reviewed entry revisions/evidence revision | Explicit user decision only, scoped to this occurrence and that typed pair of entries. It authorizes removing this block, not a bypass of normal precedence or confirmation rank. Any referenced entry change, merchant enablement change, or change to linked observation evidence makes the approval stale. Re-evaluation discovers any new conflict separately. |
+
+Each entry reference is `(kind, ID)`, with kind `matching_entry`, `merchant_default` or `classification_preference`. Merchant conflicts reference matching entries; category conflicts reference defaults or preferences. IDs from different kinds may coincide. Persist and return typed references, enforce the appropriate referenced entity, reject incompatible kinds or missing targets, and recheck captured revisions when reviewing or applying a decision.
+
+The merchant enablement revision changes only when its enabled state changes. Application
+approvals retain the referenced merchants' enablement revisions, so disabling and later
+re-enabling a merchant invalidates an old approval even if its final state is unchanged.
+
+Each review snapshot records the affected confirmed decisions, proposed change and resulting preview. For an application conflict it also captures the occurrence, evidence revision, all applicable typed candidates and their revisions, current override and category, relevant approval states and the resulting merchant/category decision. For a change suggestion it captures the target and all affected confirmed decisions and revisions, including decisions affected by a merchant disable. Recompute the full snapshot under the configuration lock and, for an application conflict, the occurrence lock immediately before approval. If any captured input or resulting effect differs, report stale and require a new preview; do not apply the approval. This catches newly added applicable rules and changes to overrides or ordinary classification, not just edits to the originally reviewed pair. A previously approved application remains scoped to its pair and is invalidated as specified in the table; new conflicts require their own review. Review snapshots and outcomes remain local and are not logged.
+
+No rule is silently overwritten. A user-directed edit/disable is itself an explicit action and updates the revision; an AI-originated conflicting application is blocked per occurrence and may remain eligible elsewhere.
+
+## Evaluation and durable work
+
+| Entity | Fields and relationships | Validation and lifecycle |
+|--------|--------------------------|--------------------------|
+| Occurrence evidence revision | Occurrence ID, monotonically increasing revision | Increment atomically when its linked source observations change; creation captures initial linked evidence. Do not increment for an unchanged reimport. It is not a new identity or reconciliation rule. |
+| Import evaluation work | Occurrence ID (unique), import correlation ID, state (`pending`, `completed`, `failed`), last sanitized error code, latest evaluation result | Created atomically only for a newly created occurrence in the import transaction. `pending` survives process interruption; `failed` is retryable; `completed` includes resolved, no-match and conflict outcomes. Retry of unknown commit first reads current state. Import correlation supports reporting without source paths. |
+| Evaluation outcome | Occurrence ID, evidence revision, identified merchant ID or `no_match`/`conflict`, matching candidates, category decision and winning rule/override references, blocked AI conflicts and status | Persist with a completed import work item; return from explicit evaluations. Rule references include kind and ID; override references identify the occurrence. Do not return or log source descriptions as error text. A failure is not an outcome that asserts no match or an unclassified result. |
+
+One work record per newly imported occurrence prevents duplicate automatic application on overlapping import. Explicit reapplication of selected occurrences is a separate operation and must not cause other records to be evaluated; it returns one outcome or error per requested ID. A pending work item remains discoverable if the post-commit process dies. If evaluation fails with confirmed rollback, report the failed occurrence and mark work failed in a separate transaction when possible; if recording the failure also fails, surface the failure and leave the durable work pending rather than claiming completion.
+
+## Evaluation rules
+
+1. Read a coherent rule and linked-observation snapshot under the locks below. If an override exists, record it as category winner and ensure the current category reflects its value with user provenance; merchant identification and conflicts are still reported. This restores the override if a general enrichment update changed the category since the override was set.
+2. Collect enabled merchant entries for enabled merchants; block each AI match that conflicts on this occurrence with any applicable confirmed matching entry unless each corresponding approval is current. Resolve remaining matches by alias before substring. Same-rank different merchants yield merchant conflict; same merchant yields one merchant with all winning entries. Empty matches yield no-match.
+3. Collect enabled applicable category preferences and the resolved merchant's enabled default. An unresolved merchant excludes merchant-dependent candidates. For each AI candidate that conflicts in category with any applicable user-confirmed category rule, block that AI candidate unless every conflicting pair has a current approval. Report blocks even if a different rule would win.
+4. Choose override, then preference, then default. Within preferences choose merchant/exact before substring; within equal priority choose confirmed before unconfirmed. Different categories among remaining top candidates yield a category conflict and no category change; equal categories yield all winners. If no candidate remains, preserve the current category and report no rule applied.
+5. Apply a winning reusable category atomically with `source=rule`, `confidence=null`, and `status=confirmed` only if all winners are user-confirmed, otherwise `provisional`. A higher-precedence override record remains unchanged and is reflected in the current category as described in step 1. An approval removes only the specific block; ordinary precedence still applies. Never alter other dimensions, annotations or observations.
+
+## Transaction, concurrency and failure invariants
+
+- Every rules mutation, review and evaluation obtains the shared configuration row lock before any occurrence lock, with the existing five-second lock timeout; use one transaction per evaluation. Rule mutations increment the relevant revision. An occurrence override and the general transaction enrichment writer use the occurrence lock; they do not acquire the configuration lock.
+- Import holds its existing import lock and acquires an occurrence lock before adding links to an existing occurrence or changing its booking state/evidence revision. It never acquires the rules-configuration lock while holding an occurrence lock. The initial import commits before post-commit evaluation starts, avoiding lock inversion.
+- Validate all fields before writes; lock and recompute the review snapshot and recheck expected revisions before applying an approval. A stale decision is reported, not silently applied. Commit result, category write, conflicts and work completion atomically. Use a shared public transaction operation or explicitly owned shared persistence boundary, not a nested `update_enrichment` transaction.
+- A confirmed rollback leaves prior records unchanged. Cancellation during a write rolls back if possible; a lost commit acknowledgement is `unknown`, and the caller must read state before retrying. Avoid recording a false failed result in that case.
+- Add PostgreSQL checks and foreign keys for enumerations, nonempty fields, operand exclusivity, unique current defaults/overrides/work, references and revision positivity. Guard downgrade when any new records would be lost. Migration from `0006` preserves every existing record and creates no retrospective work.

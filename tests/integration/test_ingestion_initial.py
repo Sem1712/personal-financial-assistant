@@ -6,6 +6,8 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from personal_financial_assistant.cli import run
 from personal_financial_assistant.infrastructure.models import (
+    OccurrenceEvidenceRevision,
+    RuleEvaluationWork,
     SelectedAccount,
     SourceFile,
     TransactionObservation,
@@ -160,12 +162,21 @@ async def test_initial_import_persists_all_rows(
                 await connection.execute(select(TransactionOccurrence.__table__))
             ).all()
             files = (await connection.execute(select(SourceFile.__table__))).all()
+            work = (
+                await connection.execute(select(RuleEvaluationWork.__table__))
+            ).all()
+            revisions = (
+                await connection.execute(select(OccurrenceEvidenceRevision.__table__))
+            ).all()
         assert len(files) == 2
         assert len(observations) == len(occurrences) == 3
         assert {item.amount_minor for item in observations} == {-1234, 301, -400}
         assert {item.booking_status for item in observations} == {"pending", "booked"}
         assert {item.category for item in observations} == {"Food", "Travel", None}
         assert result.unresolved_observations == 0
+        assert len(work) == len(revisions) == 3
+        assert {item.state for item in work} == {"completed"}
+        assert {item.import_correlation_id for item in work} == {result.correlation_id}
     finally:
         await engine.dispose()
 

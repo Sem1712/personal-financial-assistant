@@ -30,7 +30,7 @@ def test_upgrade_preserves_existing_schema(
     command.upgrade(Config("alembic.ini"), "head")
     assert (
         asyncio.run(execute(postgres_url, "SELECT version_num FROM alembic_version"))
-        == "0006_category_whitespace"
+        == "0008_outcome_explanations"
     )
     if existing:
         assert (
@@ -137,7 +137,7 @@ def test_ui_import_run_migration(
     command.upgrade(config, "head")
     assert (
         asyncio.run(execute(postgres_url, "SELECT version_num FROM alembic_version"))
-        == "0006_category_whitespace"
+        == "0008_outcome_explanations"
     )
     assert (
         asyncio.run(
@@ -347,4 +347,173 @@ def test_category_whitespace_migration_preserves_existing_enrichment(
             postgres_url,
             "UPDATE transaction_classification SET value = U&'\\00A0' WHERE occurrence_id = 2",
         )
+    )
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_merchant_rules_migration_preserves_prior_data(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch, existing: bool
+) -> None:
+    monkeypatch.setenv("PFA_DATABASE_URL", postgres_url)
+    config = Config("alembic.ini")
+    if existing:
+        command.upgrade(config, "0006_category_whitespace")
+        for statement in (
+            "INSERT INTO selected_account (id, account_reference) VALUES (1, 'synthetic')",
+            (
+                "INSERT INTO transaction_occurrence "
+                "(id, account_id, transaction_date, amount_minor, currency, "
+                "booking_status, reconciliation_state) "
+                "VALUES (1, 1, '2025-01-01', -100, 'EUR', 'booked', 'confirmed')"
+            ),
+            (
+                "INSERT INTO source_file (sha256, transaction_row_count, account_id) "
+                "VALUES (repeat('a',64), 1, 1)"
+            ),
+            (
+                "INSERT INTO transaction_observation "
+                "(id, source_file_sha256, sheet_index, row_number, account_id, "
+                "transaction_date, amount_minor, currency, operation, booking_status, "
+                "candidate_key, occurrence_ordinal) VALUES "
+                "(1, repeat('a',64), 0, 1, 1, '2025-01-01', -100, 'EUR', "
+                "'synthetic merchant', 'booked', repeat('b',64), 1)"
+            ),
+            "INSERT INTO occurrence_observation VALUES (1, 1)",
+            (
+                "INSERT INTO transaction_classification "
+                "(occurrence_id, dimension, value, status, source) "
+                "VALUES (1, 'category', 'groceries', 'confirmed', 'user')"
+            ),
+            "INSERT INTO transaction_context (occurrence_id, user_annotation) VALUES (1, 'synthetic note')",
+            (
+                "INSERT INTO ui_import_run (id, state, started_at) "
+                "VALUES ('00000000-0000-0000-0000-000000000001', 'running', now())"
+            ),
+        ):
+            asyncio.run(execute(postgres_url, statement))
+
+    command.upgrade(config, "head")
+    assert (
+        asyncio.run(execute(postgres_url, "SELECT version_num FROM alembic_version"))
+        == "0008_outcome_explanations"
+    )
+    assert (
+        asyncio.run(execute(postgres_url, "SELECT count(*) FROM rule_evaluation_work"))
+        == 0
+    )
+    assert (
+        asyncio.run(
+            execute(postgres_url, "SELECT count(*) FROM occurrence_evidence_revision")
+        )
+        == 0
+    )
+    assert (
+        asyncio.run(execute(postgres_url, "SELECT count(*) FROM rules_configuration"))
+        == 1
+    )
+    if existing:
+        for statement in (
+            "SELECT count(*) = 1 FROM occurrence_observation WHERE occurrence_id = 1 AND observation_id = 1",
+            "SELECT operation = 'synthetic merchant' FROM transaction_observation WHERE id = 1",
+            "SELECT value = 'groceries' AND status = 'confirmed' AND source = 'user' FROM transaction_classification WHERE occurrence_id = 1",
+            "SELECT user_annotation = 'synthetic note' FROM transaction_context WHERE occurrence_id = 1",
+            "SELECT state = 'running' FROM ui_import_run WHERE id = '00000000-0000-0000-0000-000000000001'",
+        ):
+            assert asyncio.run(execute(postgres_url, statement)) is True
+    command.downgrade(config, "0006_category_whitespace")
+
+
+def test_merchant_rules_downgrade_refuses_to_delete_rules(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PFA_DATABASE_URL", postgres_url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    asyncio.run(
+        execute(
+            postgres_url,
+            "INSERT INTO merchant (id, canonical_name, enabled, revision) "
+            "VALUES (1, 'synthetic merchant', true, 1)",
+        )
+    )
+    with pytest.raises(RuntimeError, match="rules"):
+        command.downgrade(config, "0006_category_whitespace")
+    assert asyncio.run(execute(postgres_url, "SELECT count(*) FROM merchant")) == 1
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "INSERT INTO transaction_override (occurrence_id, category) VALUES (1, 'food')",
+        "INSERT INTO occurrence_evidence_revision (occurrence_id) VALUES (1)",
+        (
+            "INSERT INTO rule_evaluation_work (occurrence_id, import_correlation_id, state) "
+            "VALUES (1, '00000000-0000-0000-0000-000000000001', 'pending')"
+        ),
+    ],
+)
+def test_merchant_rules_downgrade_preserves_occurrence_data(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch, statement: str
+) -> None:
+    monkeypatch.setenv("PFA_DATABASE_URL", postgres_url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "head")
+    for setup in (
+        "INSERT INTO selected_account (id, account_reference) VALUES (1, 'synthetic')",
+        (
+            "INSERT INTO transaction_occurrence (id, account_id, transaction_date, amount_minor, currency, "
+            "booking_status, reconciliation_state) VALUES (1, 1, '2025-01-01', -100, 'EUR', 'booked', 'confirmed')"
+        ),
+        statement,
+    ):
+        asyncio.run(execute(postgres_url, setup))
+    with pytest.raises(RuntimeError, match="rules"):
+        command.downgrade(config, "0006_category_whitespace")
+    assert (
+        asyncio.run(execute(postgres_url, "SELECT version_num FROM alembic_version"))
+        == "0008_outcome_explanations"
+    )
+
+
+def test_explanation_migration_preserves_legacy_outcomes_and_guards_downgrade(
+    postgres_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PFA_DATABASE_URL", postgres_url)
+    config = Config("alembic.ini")
+    command.upgrade(config, "0007_merchant_rules")
+    for statement in (
+        "INSERT INTO selected_account (id, account_reference) VALUES (1, 'synthetic')",
+        "INSERT INTO transaction_occurrence (id, account_id, transaction_date, amount_minor, currency, booking_status, reconciliation_state) VALUES (1, 1, '2025-01-01', -100, 'EUR', 'booked', 'confirmed')",
+        "INSERT INTO rule_evaluation_work (occurrence_id, import_correlation_id, state) VALUES (1, '00000000-0000-0000-0000-000000000001', 'completed')",
+        "INSERT INTO rule_evaluation_outcome (occurrence_id, evidence_revision, merchant_status, matching_candidates, category_decision, winning_references, blocked_ai_conflicts) VALUES (1, 1, 'no_match', '[]', '{\"kind\":\"unchanged\",\"reason\":\"no_rule\"}', '[]', '[]')",
+    ):
+        asyncio.run(execute(postgres_url, statement))
+    command.upgrade(config, "head")
+    assert (
+        asyncio.run(
+            execute(
+                postgres_url,
+                "SELECT merchant_decision IS NULL AND category_conflict_candidates IS NULL "
+                "AND category_decision->>'reason' = 'no_rule' FROM rule_evaluation_outcome",
+            )
+        )
+        is True
+    )
+    asyncio.run(
+        execute(
+            postgres_url,
+            'UPDATE rule_evaluation_outcome SET merchant_decision = \'{"status":"no_match"}\', '
+            "category_conflict_candidates = '[]'",
+        )
+    )
+    with pytest.raises(RuntimeError, match="explanations"):
+        command.downgrade(config, "0007_merchant_rules")
+    assert (
+        asyncio.run(
+            execute(
+                postgres_url,
+                "SELECT merchant_decision->>'status' FROM rule_evaluation_outcome",
+            )
+        )
+        == "no_match"
     )

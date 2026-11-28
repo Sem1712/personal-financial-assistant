@@ -3,14 +3,21 @@
 import hashlib
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, insert, select
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
-from personal_financial_assistant.infrastructure.database import session_scope
+from personal_financial_assistant.infrastructure.database import (
+    PinnedConnectionBusy,
+    PinnedConnectionLost,
+    session_scope,
+)
 from personal_financial_assistant.infrastructure.models import (
+    OccurrenceEvidenceRevision,
+    RuleEvaluationWork,
     SelectedAccount,
     SourceFile,
     TransactionObservation,
@@ -28,6 +35,18 @@ from personal_financial_assistant.ingestion.xlsx_reader import (
     discover_workbooks,
     read_workbook,
 )
+from personal_financial_assistant.rules import (
+    MAX_SELECTION,
+    EvaluationItem,
+    EvaluationSummary,
+    RulesCommitUnknown,
+    RulesStorageError,
+    RuleValidationError,
+    retry_work,
+    summarize,
+    validate_correlation_id,
+)
+from personal_financial_assistant.transactions import lock_occurrence
 
 
 class IngestionError(Exception):
@@ -57,6 +76,8 @@ class ImportResult:
     observations_unchanged: int
     unresolved_observations: int
     errors: tuple[str, ...] = ()
+    correlation_id: UUID | None = None
+    evaluation: EvaluationSummary = field(default_factory=EvaluationSummary)
 
 
 def _candidate_key(account_id: int, observation: Observation) -> str:
@@ -73,12 +94,19 @@ async def ingest_xlsx(
     *,
     snapshots: Sequence[FileSnapshot] | None = None,
     worker: WorkbookWorker | None = None,
+    import_correlation_id: UUID | None = None,
 ) -> ImportResult:
     """Reconcile a batch atomically, optionally using an owned UI worker and connection.
 
     The caller owns the worker and any pinned connection. A pinned connection must
     not have an active transaction when ingestion starts.
     """
+    try:
+        correlation_id = validate_correlation_id(
+            import_correlation_id if import_correlation_id is not None else uuid4()
+        )
+    except RuleValidationError:
+        raise IngestionError("Invalid import correlation ID") from None
     if snapshots is None:
         snapshots = (
             await worker.discover(directory)
@@ -110,8 +138,19 @@ async def ingest_xlsx(
                 await check_snapshots(snapshots)
         except WorkbookError as exc:
             raise InvalidWorkbook(str(exc)) from None
-        return ImportResult(len(snapshots), len(snapshots), 0, 0, 0, 0, 0, 0)
+        return ImportResult(
+            len(snapshots),
+            len(snapshots),
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            correlation_id=correlation_id,
+        )
     account_reference = next(iter(accounts), None)
+    new_occurrence_ids: list[int] = []
     async with session_scope(engine) as session:
         locked = await session.scalar(select(func.pg_try_advisory_xact_lock(7718257)))
         if not locked:
@@ -229,6 +268,17 @@ async def ingest_xlsx(
                 session.add(occurrence)
                 await session.flush()
                 new_occurrences.append(occurrence)
+                new_occurrence_ids.append(occurrence.id)
+                session.add(
+                    OccurrenceEvidenceRevision(occurrence_id=occurrence.id, revision=1)
+                )
+                session.add(
+                    RuleEvaluationWork(
+                        occurrence_id=occurrence.id,
+                        import_correlation_id=correlation_id,
+                        state="pending",
+                    )
+                )
                 if record_id is not None:
                     await session.execute(
                         insert(occurrence_observation).values(
@@ -236,6 +286,11 @@ async def ingest_xlsx(
                         )
                     )
                 inserted += 1
+            affected_occurrences = {
+                occurrence_id for occurrence_id, _ in (*plan.updates, *plan.links)
+            }
+            for occurrence_id in sorted(affected_occurrences):
+                await lock_occurrence(session, occurrence_id)
             for occurrence_id, status in plan.updates:
                 occurrence = next(item for item in existing if item.id == occurrence_id)
                 occurrence.booking_status = status
@@ -247,6 +302,16 @@ async def ingest_xlsx(
                         occurrence_id=occurrence_id, observation_id=observation_id
                     )
                 )
+            for occurrence_id in {occurrence_id for occurrence_id, _ in plan.links}:
+                evidence = await session.get(OccurrenceEvidenceRevision, occurrence_id)
+                if evidence is None:
+                    session.add(
+                        OccurrenceEvidenceRevision(
+                            occurrence_id=occurrence_id, revision=2
+                        )
+                    )
+                else:
+                    evidence.revision += 1
             for index, observation_id in plan.new_links:
                 await session.execute(
                     insert(occurrence_observation).values(
@@ -272,6 +337,25 @@ async def ingest_xlsx(
                 await check_snapshots(snapshots)
         except WorkbookError as exc:
             raise InvalidWorkbook(str(exc)) from None
+    evaluation_items: list[EvaluationItem] = []
+    for offset in range(0, len(new_occurrence_ids), MAX_SELECTION):
+        selected = new_occurrence_ids[offset : offset + MAX_SELECTION]
+        try:
+            batch = await retry_work(engine, selected)
+        except (
+            RulesStorageError,
+            RulesCommitUnknown,
+            PinnedConnectionBusy,
+            PinnedConnectionLost,
+        ):
+            evaluation_items.extend(
+                EvaluationItem(
+                    occurrence_id, "unknown", error_code="evaluation_unavailable"
+                )
+                for occurrence_id in selected
+            )
+        else:
+            evaluation_items.extend(batch.items)
     return ImportResult(
         files_seen=len(snapshots),
         files_processed=len(seen_sources),
@@ -281,4 +365,6 @@ async def ingest_xlsx(
         transactions_updated=updated,
         observations_unchanged=unchanged_rows,
         unresolved_observations=unresolved or 0,
+        correlation_id=correlation_id,
+        evaluation=summarize(evaluation_items),
     )

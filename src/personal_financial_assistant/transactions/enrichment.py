@@ -301,6 +301,81 @@ async def _rollback(session: AsyncSession) -> None:
         ) from None
 
 
+async def lock_occurrence(
+    session: AsyncSession, occurrence_id: int
+) -> TransactionOccurrence:
+    """Lock an occurrence in the caller's transaction; the caller sets lock timeout."""
+    occurrence = await session.scalar(
+        select(TransactionOccurrence)
+        .where(TransactionOccurrence.id == occurrence_id)
+        .with_for_update()
+    )
+    if occurrence is None:
+        raise OccurrenceNotFound("Transaction occurrence not found")
+    return occurrence
+
+
+async def apply_enrichment_in_session(
+    session: AsyncSession, occurrence_id: int, update: EnrichmentUpdate
+) -> EnrichmentResult:
+    """Apply a patch under the occurrence lock without committing the caller's transaction.
+
+    The caller owns the session, lock timeout, commit, rollback and error handling.
+    """
+    update = EnrichmentUpdate.model_validate(update.model_dump(exclude_unset=True))
+    await lock_occurrence(session, occurrence_id)
+    for dimension in DIMENSIONS:
+        if dimension not in update.model_fields_set:
+            continue
+        value = getattr(update, dimension)
+        existing = await session.get(
+            TransactionClassification, (occurrence_id, dimension)
+        )
+        if value is None:
+            if existing is not None:
+                await session.delete(existing)
+        elif existing is None:
+            session.add(
+                TransactionClassification(
+                    occurrence_id=occurrence_id,
+                    dimension=dimension,
+                    value=value.value,
+                    status=value.status,
+                    source=value.source,
+                    confidence=Decimal(value.confidence)
+                    if value.confidence is not None
+                    else None,
+                )
+            )
+        else:
+            existing.value = value.value
+            existing.status = value.status
+            existing.source = value.source
+            existing.confidence = (
+                Decimal(value.confidence) if value.confidence is not None else None
+            )
+    if update.model_fields_set.intersection(CONTEXT_FIELDS):
+        context = await session.get(TransactionContext, occurrence_id)
+        if context is None:
+            context = TransactionContext(occurrence_id=occurrence_id)
+            session.add(context)
+        for field in CONTEXT_FIELDS:
+            if field in update.model_fields_set:
+                setattr(context, field, getattr(update, field))
+    await session.flush()
+    rows = list(
+        (
+            await session.scalars(
+                select(TransactionClassification).where(
+                    TransactionClassification.occurrence_id == occurrence_id
+                )
+            )
+        ).all()
+    )
+    context = await session.get(TransactionContext, occurrence_id)
+    return build_result(rows, context)
+
+
 async def update_enrichment(
     engine: AsyncEngine, occurrence_id: int, update: EnrichmentUpdate
 ) -> EnrichmentResult:
@@ -309,65 +384,7 @@ async def update_enrichment(
     async with AsyncSession(engine, expire_on_commit=False) as session:
         try:
             await session.execute(text("SET LOCAL lock_timeout = '5s'"))
-            occurrence = await session.scalar(
-                select(TransactionOccurrence)
-                .where(TransactionOccurrence.id == occurrence_id)
-                .with_for_update()
-            )
-            if occurrence is None:
-                raise OccurrenceNotFound("Transaction occurrence not found")
-            for dimension in DIMENSIONS:
-                if dimension not in update.model_fields_set:
-                    continue
-                value = getattr(update, dimension)
-                existing = await session.get(
-                    TransactionClassification, (occurrence_id, dimension)
-                )
-                if value is None:
-                    if existing is not None:
-                        await session.delete(existing)
-                elif existing is None:
-                    session.add(
-                        TransactionClassification(
-                            occurrence_id=occurrence_id,
-                            dimension=dimension,
-                            value=value.value,
-                            status=value.status,
-                            source=value.source,
-                            confidence=Decimal(value.confidence)
-                            if value.confidence is not None
-                            else None,
-                        )
-                    )
-                else:
-                    existing.value = value.value
-                    existing.status = value.status
-                    existing.source = value.source
-                    existing.confidence = (
-                        Decimal(value.confidence)
-                        if value.confidence is not None
-                        else None
-                    )
-            if update.model_fields_set.intersection(CONTEXT_FIELDS):
-                context = await session.get(TransactionContext, occurrence_id)
-                if context is None:
-                    context = TransactionContext(occurrence_id=occurrence_id)
-                    session.add(context)
-                for field in CONTEXT_FIELDS:
-                    if field in update.model_fields_set:
-                        setattr(context, field, getattr(update, field))
-            await session.flush()
-            rows = list(
-                (
-                    await session.scalars(
-                        select(TransactionClassification).where(
-                            TransactionClassification.occurrence_id == occurrence_id
-                        )
-                    )
-                ).all()
-            )
-            context = await session.get(TransactionContext, occurrence_id)
-            result = build_result(rows, context)
+            result = await apply_enrichment_in_session(session, occurrence_id, update)
         except asyncio.CancelledError:
             await _rollback(session)
             raise

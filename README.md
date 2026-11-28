@@ -76,6 +76,38 @@ Enrichment validation errors include a safe reason without input values.
 Category and context text cannot contain NUL or unpaired Unicode surrogates, which
 PostgreSQL cannot store.
 
+Trusted local Python consumers can manage merchants and literal matching entries through
+the async `rules` module and call `identify_merchant` for an occurrence. Matching uses
+case-folded, whitespace-normalized operation and details fields separately; ambiguous
+matches are reported rather than arbitrarily chosen. Merchant identification does not
+change the source data or category. The same service boundary supports user-directed
+category defaults, preferences and per-occurrence overrides; `evaluate_rules` explicitly
+applies them without changing unrelated fields. An override is restored on evaluation
+even if the general enrichment boundary changed the category; clearing an override does
+not immediately reclassify it. Trusted local consumers can submit AI-origin proposals
+and explicitly review protected changes and per-occurrence conflicts. Approvals apply
+only to the reviewed pair and revisions, and do not bypass rule precedence; stale
+previews must be reviewed again. User-directed operations require an actual user
+instruction, not model output. Rule-management controls are not provided in the UI.
+Newly imported occurrences are evaluated after the import commits; existing occurrences
+are not automatically reclassified on overlapping imports. Each import returns a
+correlation ID and an evaluation summary. Incomplete evaluation produces a sanitized
+warning without undoing the import.
+
+Use `rules.inspect_work` to inspect durable pending, failed and completed evaluations,
+optionally by correlation ID or occurrence IDs. `rules.retry_work` explicitly retries
+selected pending or failed items; it checks durable state before retrying an unknown
+commit. `rules.reapply_selected` evaluates only the selected occurrences. Both accept
+up to 500 distinct occurrence IDs and report individual outcomes. Cancellation during
+a commit raises `rules.RulesCommitCancelled`; inspect current state before retrying
+because the commit outcome is unknown. A pinned database
+connection remains caller-owned and must have no active transaction. Review and
+evaluation outcomes are local and may contain sensitive classifications; do not log them.
+Outcomes recorded before the explanation migration expose unavailable merchant-decision
+and category-conflict details as `None`; they are not reconstructed from current rules.
+Merchant rules and review data remain local; downgrading the merchant-rules migration is
+refused while its feature data exists.
+
 The category-whitespace migration refuses to upgrade if legacy storage contains a
 whitespace-only classification. Correct or clear those classifications locally and retry;
 the migration does not silently alter them.

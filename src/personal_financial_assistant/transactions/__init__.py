@@ -9,6 +9,8 @@ from .enrichment import (
     EnrichmentStorageError,
     EnrichmentUpdate,
     OccurrenceNotFound,
+    apply_enrichment_in_session,
+    lock_occurrence,
     update_enrichment,
 )
 from .filters import TransactionFilters
@@ -26,8 +28,10 @@ __all__ = [
     "TransactionDetail",
     "TransactionFilters",
     "TransactionPage",
+    "apply_enrichment_in_session",
     "categories",
     "detail",
+    "lock_occurrence",
     "search",
     "update_enrichment",
 ]

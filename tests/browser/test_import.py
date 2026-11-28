@@ -216,6 +216,24 @@ def test_import_blocks_navigation_and_reattaches(
     expect(page.get_by_role("heading", name="Transactions")).to_be_visible()
 
 
+def test_completed_import_warns_about_incomplete_rule_evaluation(
+    page: Page, local_app: LocalApp
+) -> None:
+    local_app.run = import_run("succeeded")
+    local_app.run["evaluation"] = {
+        "attempted": 1,
+        "completed": 0,
+        "failed": 1,
+        "pending": 0,
+        "unknown": 0,
+    }
+    page.goto("http://127.0.0.1:8765/")
+    page.get_by_role("button", name="Import", exact=True).click()
+    expect(page.get_by_text("Import completed", exact=False)).to_be_visible()
+    expect(page.get_by_text("Rule evaluation incomplete", exact=False)).to_be_visible()
+    expect(page.get_by_role("button", name="Start import")).to_be_enabled()
+
+
 @pytest.mark.parametrize(
     ("state", "message"),
     [

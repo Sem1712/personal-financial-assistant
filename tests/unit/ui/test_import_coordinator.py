@@ -1,7 +1,7 @@
 import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, Mock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.exc import SQLAlchemyError
@@ -52,6 +52,68 @@ class ReapedWorker:
 
 
 @pytest.mark.asyncio
+async def test_ui_run_id_is_passed_as_evaluation_correlation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    engine, _connection = storage()
+    run_id = uuid4()
+    called = asyncio.Event()
+
+    async def ingest(
+        _directory: Path,
+        _connection: AsyncConnection,
+        *,
+        worker: WorkbookWorker,
+        import_correlation_id: UUID,
+    ) -> ImportResult:
+        assert import_correlation_id == run_id
+        called.set()
+        return ImportResult(1, 1, 0, 0, 0, 0, 0, 0)
+
+    monkeypatch.setattr(module, "WorkbookWorker", ReapedWorker)
+    monkeypatch.setattr(module, "ingest_xlsx", ingest)
+    monkeypatch.setattr(ImportCoordinator, "_watch_lock", quiet_monitor)
+    coordinator = ImportCoordinator(engine)
+    persist = AsyncMock()
+    monkeypatch.setattr(coordinator, "_persist", persist)
+    try:
+        await coordinator.start(tmp_path, run_id=run_id)
+        await asyncio.wait_for(called.wait(), 1)
+        await asyncio.sleep(0)
+        persist.assert_awaited_once()
+    finally:
+        await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_evaluation_summary_remains_readable_while_new_start_is_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine, _connection = storage()
+    run_id = uuid4()
+    inspect = AsyncMock(return_value=())
+    monkeypatch.setattr(module, "inspect_work", inspect)
+    coordinator = ImportCoordinator(engine)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def pending_start(_directory: Path, new_run_id: UUID) -> UUID:
+        entered.set()
+        await release.wait()
+        return new_run_id
+
+    monkeypatch.setattr(coordinator, "_start", pending_start)
+    task = asyncio.create_task(coordinator.start(Path(".")))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        assert await coordinator.evaluation_summary(run_id) is None
+        inspect.assert_awaited_once_with(engine, import_correlation_id=run_id)
+    finally:
+        release.set()
+        await task
+
+
+@pytest.mark.asyncio
 async def test_unexpected_error_reaps_started_worker_and_blocks_new_imports(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
@@ -66,7 +128,11 @@ async def test_unexpected_error_reaps_started_worker_and_blocks_new_imports(
     worker = ObservedWorker()
 
     async def ingest(
-        directory: Path, _connection: AsyncConnection, *, worker: WorkbookWorker
+        directory: Path,
+        _connection: AsyncConnection,
+        *,
+        worker: WorkbookWorker,
+        import_correlation_id: UUID,
     ) -> ImportResult:
         await worker.discover(directory)
         assert not worker.reaped
@@ -104,7 +170,11 @@ async def test_unexpected_error_with_failed_cleanup_preserves_error_and_blocks(
             raise WorkerCleanupError("cleanup failed")
 
     async def ingest(
-        _directory: Path, _connection: AsyncConnection, *, worker: WorkbookWorker
+        _directory: Path,
+        _connection: AsyncConnection,
+        *,
+        worker: WorkbookWorker,
+        import_correlation_id: UUID,
     ) -> ImportResult:
         raise RuntimeError("unexpected failure")
 
@@ -142,6 +212,7 @@ async def test_unconfirmed_worker_cleanup_blocks_new_imports(
         _connection: AsyncConnection,
         *,
         worker: WorkbookWorker,
+        import_correlation_id: UUID,
     ) -> ImportResult:
         return ImportResult(0, 0, 0, 0, 0, 0, 0, 0)
 
@@ -216,7 +287,11 @@ async def test_one_owned_task_blocks_duplicate_start(
     release = asyncio.Event()
 
     async def ingest(
-        _directory: Path, _connection: AsyncConnection, *, worker: WorkbookWorker
+        _directory: Path,
+        _connection: AsyncConnection,
+        *,
+        worker: WorkbookWorker,
+        import_correlation_id: UUID,
     ) -> ImportResult:
         entered.set()
         await release.wait()
@@ -250,7 +325,11 @@ async def test_failed_import_is_sanitized_before_persistence(
     engine, connection = storage()
 
     async def ingest(
-        _directory: Path, _connection: AsyncConnection, *, worker: WorkbookWorker
+        _directory: Path,
+        _connection: AsyncConnection,
+        *,
+        worker: WorkbookWorker,
+        import_correlation_id: UUID,
     ) -> ImportResult:
         raise IngestionError("private transaction details")
 
@@ -299,7 +378,11 @@ async def test_known_import_failures_have_safe_actionable_reasons(
     engine, connection = storage()
 
     async def ingest(
-        _directory: Path, _connection: AsyncConnection, *, worker: WorkbookWorker
+        _directory: Path,
+        _connection: AsyncConnection,
+        *,
+        worker: WorkbookWorker,
+        import_correlation_id: UUID,
     ) -> ImportResult:
         raise failure
 
@@ -337,7 +420,11 @@ async def test_terminal_state_write_failure_blocks_new_imports(
     ]
 
     async def ingest(
-        _directory: Path, _connection: AsyncConnection, *, worker: WorkbookWorker
+        _directory: Path,
+        _connection: AsyncConnection,
+        *,
+        worker: WorkbookWorker,
+        import_correlation_id: UUID,
     ) -> ImportResult:
         return ImportResult(0, 0, 0, 0, 0, 0, 0, 0)
 
@@ -370,7 +457,11 @@ async def test_shutdown_cancels_import_and_records_unknown(
     cancelled = asyncio.Event()
 
     async def ingest(
-        _directory: Path, _connection: AsyncConnection, *, worker: WorkbookWorker
+        _directory: Path,
+        _connection: AsyncConnection,
+        *,
+        worker: WorkbookWorker,
+        import_correlation_id: UUID,
     ) -> ImportResult:
         entered.set()
         try:
@@ -402,7 +493,11 @@ async def test_monitor_failure_cancels_work_and_invalidates_connection(
     cancelled = asyncio.Event()
 
     async def ingest(
-        _directory: Path, _connection: AsyncConnection, *, worker: WorkbookWorker
+        _directory: Path,
+        _connection: AsyncConnection,
+        *,
+        worker: WorkbookWorker,
+        import_correlation_id: UUID,
     ) -> ImportResult:
         entered.set()
         try:

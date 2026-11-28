@@ -9,6 +9,7 @@ from fastapi import APIRouter, Request
 from pydantic import BaseModel, field_validator
 
 from personal_financial_assistant.infrastructure.models import UIImportRun
+from personal_financial_assistant.rules import EvaluationSummary
 
 from .import_coordinator import (
     CoordinatorUnavailable,
@@ -58,16 +59,23 @@ async def start_import(body: ImportRequest, request: Request) -> dict[str, str]:
 
 @router.get("/current")
 async def current_import(request: Request) -> dict[str, object]:
-    run = await coordinator_for(request).current()
-    return {"run": _serialize_run(run)}
+    coordinator = coordinator_for(request)
+    run = await coordinator.current()
+    return {"run": await _serialize_with_evaluation(coordinator, run)}
 
 
 @router.post("/status")
 async def import_status(
     body: ImportStatusRequest, request: Request
 ) -> dict[str, object]:
-    run, current = await coordinator_for(request).status(body.id)
-    return {"run": _serialize_run(run), "current": _serialize_run(current)}
+    coordinator = coordinator_for(request)
+    run, current = await coordinator.status(body.id)
+    rendered = await _serialize_with_evaluation(coordinator, run)
+    if run is not None and current is not None and run.id == current.id:
+        rendered_current = rendered
+    else:
+        rendered_current = await _serialize_with_evaluation(coordinator, current)
+    return {"run": rendered, "current": rendered_current}
 
 
 @router.post("/resolve")
@@ -76,7 +84,20 @@ async def resolve_import(body: ImportStatusRequest, request: Request) -> dict[st
     return {"id": str(run_id)}
 
 
-def _serialize_run(run: UIImportRun | None) -> dict[str, object] | None:
+async def _serialize_with_evaluation(
+    coordinator: ImportCoordinator, run: UIImportRun | None
+) -> dict[str, object] | None:
+    summary = (
+        await coordinator.evaluation_summary(run.id)
+        if run is not None and run.state == "succeeded"
+        else None
+    )
+    return _serialize_run(run, summary)
+
+
+def _serialize_run(
+    run: UIImportRun | None, evaluation: EvaluationSummary | None
+) -> dict[str, object] | None:
     if run is None:
         return None
     counts = None
@@ -96,7 +117,7 @@ def _serialize_run(run: UIImportRun | None) -> dict[str, object] | None:
         if run.state == "failed"
         else None
     )
-    return {
+    serialized: dict[str, object] = {
         "id": str(run.id),
         "state": run.state,
         "started_at": run.started_at,
@@ -104,3 +125,12 @@ def _serialize_run(run: UIImportRun | None) -> dict[str, object] | None:
         "counts": counts,
         "error": error,
     }
+    if evaluation is not None:
+        serialized["evaluation"] = {
+            "attempted": evaluation.attempted,
+            "completed": evaluation.completed,
+            "failed": evaluation.failed,
+            "pending": evaluation.pending,
+            "unknown": evaluation.unknown,
+        }
+    return serialized

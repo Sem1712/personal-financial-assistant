@@ -9,6 +9,7 @@ import pytest
 import pytest_asyncio
 
 from personal_financial_assistant.infrastructure.models import UIImportRun
+from personal_financial_assistant.rules import EvaluationSummary
 from personal_financial_assistant.ui.app import create_app
 from personal_financial_assistant.ui.import_coordinator import (
     CoordinatorUnavailable,
@@ -28,6 +29,7 @@ class Coordinator:
         self.error: Exception | None = None
         self.run: UIImportRun | None = None
         self.tracked: UIImportRun | None = None
+        self.evaluation: EvaluationSummary | None = None
 
     async def start(self, directory: Path, *, run_id: UUID | None = None) -> UUID:
         if self.error is not None:
@@ -53,6 +55,10 @@ class Coordinator:
         if self.error is not None:
             raise self.error
         return run_id
+
+    async def evaluation_summary(self, run_id: UUID) -> EvaluationSummary | None:
+        assert run_id == RUN_ID
+        return self.evaluation
 
 
 @pytest_asyncio.fixture
@@ -159,6 +165,35 @@ async def test_current_reports_all_counts(
         "observations_unchanged": 0,
         "unresolved_observations": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_completed_import_reports_sanitized_evaluation_warning(
+    client: tuple[httpx.AsyncClient, Coordinator],
+) -> None:
+    http, coordinator = client
+    now = datetime.now(UTC)
+    coordinator.run = UIImportRun(
+        id=RUN_ID,
+        state="succeeded",
+        started_at=now,
+        finished_at=now,
+        files_seen=1,
+        files_processed=1,
+        files_unchanged=0,
+        rows_read=1,
+        transactions_added=1,
+        transactions_updated=0,
+        observations_unchanged=0,
+        unresolved_observations=0,
+    )
+    coordinator.evaluation = EvaluationSummary(attempted=1, failed=1)
+    response = await http.get("/api/imports/current")
+    assert response.status_code == 200
+    run = response.json()["run"]
+    assert run["state"] == "succeeded"
+    assert run["evaluation"]["failed"] == 1
+    assert "private" not in response.text
 
 
 @pytest.mark.asyncio

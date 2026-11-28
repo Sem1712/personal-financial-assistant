@@ -32,6 +32,12 @@ from personal_financial_assistant.ingestion.worker_client import (
     WorkerUnavailable,
 )
 from personal_financial_assistant.ingestion.xlsx_reader import WorkbookError
+from personal_financial_assistant.rules import (
+    EvaluationSummary,
+    RulesCommitUnknown,
+    RulesStorageError,
+    inspect_work,
+)
 
 logger = logging.getLogger(__name__)
 LOCK_KEY = 7718258
@@ -276,6 +282,29 @@ class ImportCoordinator:
         except SQLAlchemyError, PostgresError, InterfaceError, OSError, TimeoutError:
             raise CoordinatorUnavailable from None
 
+    async def evaluation_summary(self, run_id: UUID) -> EvaluationSummary | None:
+        """Derive a sanitized summary from durable work after the import."""
+        try:
+            records = await inspect_work(self._engine, import_correlation_id=run_id)
+        except (
+            RulesStorageError,
+            RulesCommitUnknown,
+            PinnedConnectionBusy,
+            PinnedConnectionLost,
+        ):
+            raise CoordinatorUnavailable from None
+        if not records:
+            return None
+        completed = sum(record.state == "completed" for record in records)
+        failed = sum(record.state == "failed" for record in records)
+        pending = sum(record.state == "pending" for record in records)
+        return EvaluationSummary(
+            attempted=completed + failed,
+            completed=completed,
+            failed=failed,
+            pending=pending,
+        )
+
     async def _persist(
         self,
         connection: AsyncConnection,
@@ -327,7 +356,9 @@ class ImportCoordinator:
         cancelled = False
         try:
             try:
-                result = await ingest_xlsx(directory, connection, worker=worker)
+                result = await ingest_xlsx(
+                    directory, connection, worker=worker, import_correlation_id=run_id
+                )
                 state = "no_files" if result.files_seen == 0 else "succeeded"
             except asyncio.CancelledError:
                 cancelled = True

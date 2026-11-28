@@ -753,3 +753,6 @@ async def test_http_import_returns_persisted_counts_without_path(
         assert run["state"] == "succeeded"
         assert isinstance(run["counts"], dict)
         assert run["counts"]["transactions_added"] == 1
+        assert isinstance(run["evaluation"], dict)
+        assert run["evaluation"]["completed"] == 1
+        assert run["evaluation"]["failed"] == run["evaluation"]["pending"] == 0

@@ -14,6 +14,7 @@ const COUNT_LABELS = [
   ["observations_unchanged", "Observations unchanged"],
   ["unresolved_observations", "Unresolved observations"],
 ];
+const EVALUATION_KEYS = ["attempted", "completed", "failed", "pending", "unknown"];
 
 function validRun(run) {
   if (run === null) return true;
@@ -22,6 +23,8 @@ function validRun(run) {
     return false;
   }
   if (typeof run.started_at !== "string") return false;
+  if (run.evaluation !== undefined && (!run.evaluation || typeof run.evaluation !== "object" ||
+    !EVALUATION_KEYS.every((key) => Number.isSafeInteger(run.evaluation[key]) && run.evaluation[key] >= 0))) return false;
   if (run.state === "running") return run.finished_at === null;
   if (typeof run.finished_at !== "string") return false;
   if (run.state === "succeeded" || run.state === "no_files") {
@@ -133,7 +136,12 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
     folderError.textContent = value ? "Use a non-empty local folder path without invalid characters." : "";
   }
 
-  function renderCounts(values) {
+  function evaluationWarning(evaluation) {
+    if (!evaluation || !(evaluation.failed || evaluation.pending || evaluation.unknown)) return null;
+    return `Rule evaluation incomplete: failed ${evaluation.failed}, pending ${evaluation.pending}, unknown ${evaluation.unknown}. Inspect work before retrying.`;
+  }
+
+  function renderCounts(values, evaluation = null) {
     counts.replaceChildren();
     if (!values) return;
     for (const [key, label] of COUNT_LABELS) {
@@ -144,6 +152,14 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
     if (values.unresolved_observations > 0) {
       const item = document.createElement("li");
       item.textContent = "Unresolved observations could not be confidently linked to a transaction.";
+      item.className = "status-message count-warning";
+      item.dataset.kind = "unknown";
+      counts.append(item);
+    }
+    const warning = evaluationWarning(evaluation);
+    if (warning) {
+      const item = document.createElement("li");
+      item.textContent = warning;
       item.className = "status-message count-warning";
       item.dataset.kind = "unknown";
       counts.append(item);
@@ -214,6 +230,12 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
           explanation.textContent = "Unresolved observations could not be confidently linked to a transaction.";
           details.append(explanation);
         }
+        const warning = evaluationWarning(run.evaluation);
+        if (warning) {
+          const explanation = document.createElement("li");
+          explanation.textContent = warning;
+          details.append(explanation);
+        }
         item.append(details);
       }
       outcomes.append(item);
@@ -259,7 +281,8 @@ export function createImportView({ request, HttpError, setLocked, showImport }) 
     focusStatusIfActive(retry);
     retry.hidden = true;
     showResolve(false);
-    renderCounts(pendingIds.length > 1 ? null : (ownRun || current)?.counts);
+    const shownRun = ownRun || current;
+    renderCounts(pendingIds.length > 1 ? null : shownRun?.counts, shownRun?.evaluation);
     if (current?.state === "running") {
       hasActiveRun = true;
       lock(true);

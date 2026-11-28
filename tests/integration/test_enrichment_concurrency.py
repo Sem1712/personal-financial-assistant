@@ -13,6 +13,9 @@ from personal_financial_assistant.transactions import (
     EnrichmentLockTimeout,
     EnrichmentStorageError,
     EnrichmentUpdate,
+    OccurrenceNotFound,
+    apply_enrichment_in_session,
+    lock_occurrence,
     update_enrichment,
 )
 from personal_financial_assistant.transactions.service import detail
@@ -42,6 +45,51 @@ def patch(**fields: object) -> EnrichmentUpdate:
 
 def classification(value: str, source: str = "user") -> dict[str, str]:
     return {"value": value, "status": "confirmed", "source": source}
+
+
+@pytest.mark.asyncio
+async def test_session_enrichment_obeys_caller_transaction(engine: AsyncEngine) -> None:
+    await update_enrichment(
+        engine,
+        1,
+        patch(transaction_type=classification("expense"), user_annotation="note"),
+    )
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await lock_occurrence(session, 1)
+        result = await apply_enrichment_in_session(
+            session, 1, patch(category=classification("food", "rule"))
+        )
+        assert result.category.value == "food"
+        assert result.transaction_type.value == "expense"
+        assert result.user_annotation == "note"
+        before_commit = await detail(engine, 1)
+        assert before_commit is not None
+        assert before_commit.enrichment.category.status == "unclassified"
+        await session.rollback()
+
+    after_rollback = await detail(engine, 1)
+    assert after_rollback is not None
+    assert after_rollback.enrichment.category.status == "unclassified"
+    assert after_rollback.enrichment.transaction_type.value == "expense"
+    assert after_rollback.enrichment.user_annotation == "note"
+
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        await lock_occurrence(session, 1)
+        await apply_enrichment_in_session(
+            session, 1, patch(category=classification("food", "rule"))
+        )
+        await session.commit()
+    after_commit = await detail(engine, 1)
+    assert after_commit is not None
+    assert after_commit.enrichment.category.value == "food"
+    assert after_commit.enrichment.category.source == "rule"
+
+
+@pytest.mark.asyncio
+async def test_session_lock_reports_missing_occurrence(engine: AsyncEngine) -> None:
+    async with AsyncSession(engine) as session:
+        with pytest.raises(OccurrenceNotFound):
+            await lock_occurrence(session, 999)
 
 
 @pytest.mark.asyncio

@@ -106,6 +106,14 @@ async def run(arguments: Sequence[str]) -> int:
             f"observations unchanged: {result.observations_unchanged}; "
             f"unresolved observations: {result.unresolved_observations}."
         )
+        evaluation = result.evaluation
+        if evaluation.failed or evaluation.pending or evaluation.unknown:
+            print(
+                "Import completed; rule evaluation incomplete: "
+                f"failed: {evaluation.failed}; pending: {evaluation.pending}; "
+                f"unknown: {evaluation.unknown}. Inspect work before retrying.",
+                file=sys.stderr,
+            )
         return 0
     except (ParameterError, SettingsError, WorkbookError, IngestionError) as exc:
         print(f"Import failed: {exc}", file=sys.stderr)
